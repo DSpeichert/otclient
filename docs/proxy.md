@@ -48,38 +48,70 @@ a higher value makes a proxy less preferred.
 Proxies added this way (for example from `init.lua` or `otclientrc.lua`) are
 static: the login flow never removes them.
 
-### From the HTTP login webservice
+### From the otshosting.pl discovery API (`modules/otshosting`)
 
-When the client logs in through the HTTP login webservice (`httpLogin`), the
-JSON response may contain a `proxies` array inside `playdata` (a top-level
-`proxies` array is accepted as a fallback):
+Servers hosted on [otshosting.pl](https://otshosting.pl) expose their OTShield
+proxy entry points over a public discovery endpoint:
+
+```
+GET https://otshosting.pl/api/proxy/{subdomain}
+```
+
+where `{subdomain}` is the server's subdomain label (the `myserver` part of
+`myserver.ots.ovh`). The response is one flat list; every entry has exactly a
+`host` and a `priority` (lower = preferred):
 
 ```json
 {
-  "session": { "sessionkey": "...", "premiumuntil": 0 },
-  "playdata": {
-    "worlds": [
-      { "id": 0, "name": "MyWorld", "externaladdressprotected": "proxy", "externalportprotected": 7172 }
-    ],
-    "characters": [ { "worldid": 0, "name": "Player" } ],
-    "proxies": [
-      { "host": "proxy1.example.com", "port": 7171, "priority": 0 },
-      { "host": "wss://proxy2.example.com/otc", "port": 0, "priority": 20 }
-    ]
-  }
+  "proxies": [
+    { "host": "proxy1.ots.ovh:25001", "priority": 0 },
+    { "host": "wss://myserver.ots.ovh:8443/session", "priority": 0 }
+  ]
 }
 ```
 
-`LoginHttp` (`src/framework/net/httplogin.cpp`) forwards the array to
-`EnterGame.loginSuccess`, which registers every entry with `g_proxy.addProxy`.
-The list is scoped to that login: proxies received from a previous login are
-removed before the next login attempt (including logins to classic
-`ip:port` servers), while statically configured proxies are left alone.
-Returning an empty array or omitting the field simply means "no proxies".
+`host` is either `hostname:port` (TCP proxy — each listed port accepts both
+login and game traffic) or a full `wss://` url (WebSocket proxy). The same
+hostname may appear multiple times with different ports; each entry is an
+independent candidate. An empty array means the proxy service is disabled.
 
-The world address must be `"proxy"` (or `0.0.0.0`) for the proxies to be used,
-and `externalportprotected` is the port the proxy server should open the
-session to on its side.
+The `otshosting` module consumes this endpoint. It is activated by registering
+the server's subdomain in `init.lua`:
+
+```lua
+Services = {
+    otshosting = {
+        subdomain = "myserver",          -- required, activates the module
+        refreshInterval = 300,           -- optional, seconds (API caches ≤ 60s)
+        hideServerFields = true,         -- optional, default true
+        host = "proxy", port = 7171,     -- optional login screen prefill
+        url = "https://otshosting.pl/api/proxy/", -- optional endpoint override
+    },
+}
+```
+
+The module then:
+
+1. loads the proxy list on startup,
+2. refreshes it every `refreshInterval` seconds (default 5 minutes), also
+   while connected. Updates are applied as a **graceful diff**: new proxies
+   are registered first, then proxies that disappeared from the list are
+   removed one by one — never a clear-and-readd, so active sessions keep
+   flowing over the remaining proxies (the session layer already multiplexes
+   over several proxies with resend). Discovery errors keep the current list
+   untouched,
+3. hides the server address/port fields on the login screen
+   (`hideServerFields`, since the proxy makes the address moot; `host`
+   defaults to leaving the current value, set it to `"proxy"` to force proxy
+   routing), and
+4. registers a **Proxy Diagnostics** window (top-menu button or
+   `Ctrl+Shift+P`) showing every proxy's transport, state, ping, priority,
+   session count and traffic, plus the last/next refresh, with a manual
+   refresh button. It is backed by `g_proxy.getProxiesStatus()`, which returns
+   a structured snapshot (see `meta.lua`) usable by any custom UI.
+
+Proxies registered by the module are tracked separately: statically configured
+proxies (`init.lua`, `otclientrc.lua`) are never touched by a refresh.
 
 ## Transports
 

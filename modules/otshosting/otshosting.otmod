@@ -1,0 +1,9 @@
+Module
+  name: otshosting
+  description: OTShield proxy discovery, rotation and diagnostics for servers hosted on otshosting.pl
+  author: OTClient team
+  website: https://github.com/mehah/otclient
+  sandboxed: true
+  scripts: [ otshosting ]
+  @onLoad: OTSHosting:init()
+  @onUnload: OTSHosting:terminate()

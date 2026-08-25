@@ -1,0 +1,181 @@
+OtsHostingHeaderLabel < Label
+  font: verdana-11px-monochrome
+  color: #c0c0c0
+
+OtsHostingProxyRow < UIWidget
+  height: 18
+  background-color: alpha
+
+  Label
+    id: name
+    anchors.top: parent.top
+    anchors.left: parent.left
+    width: 200
+    font: verdana-11px-monochrome
+    text-overflow-length: 30
+
+  Label
+    id: transport
+    anchors.top: parent.top
+    anchors.left: prev.right
+    width: 70
+    font: verdana-11px-monochrome
+
+  Label
+    id: state
+    anchors.top: parent.top
+    anchors.left: prev.right
+    width: 80
+    font: verdana-11px-monochrome
+
+  Label
+    id: ping
+    anchors.top: parent.top
+    anchors.left: prev.right
+    width: 55
+    font: verdana-11px-monochrome
+
+  Label
+    id: priority
+    anchors.top: parent.top
+    anchors.left: prev.right
+    width: 40
+    font: verdana-11px-monochrome
+
+  Label
+    id: sessions
+    anchors.top: parent.top
+    anchors.left: prev.right
+    width: 40
+    font: verdana-11px-monochrome
+
+  Label
+    id: traffic
+    anchors.top: parent.top
+    anchors.left: prev.right
+    anchors.right: parent.right
+    font: verdana-11px-monochrome
+
+MainWindow
+  id: otshostingWindow
+  !text: tr('Proxy Diagnostics')
+  size: 640 320
+  @onEscape: self:hide()
+
+  Label
+    id: infoServer
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+
+  Label
+    id: infoRefresh
+    anchors.top: prev.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    margin-top: 3
+    color: #c0c0c0
+
+  UIWidget
+    id: headerRow
+    anchors.top: prev.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    margin-top: 8
+    height: 16
+
+    OtsHostingHeaderLabel
+      id: name
+      !text: tr('Proxy')
+      anchors.top: parent.top
+      anchors.left: parent.left
+      width: 200
+
+    OtsHostingHeaderLabel
+      id: transport
+      !text: tr('Type')
+      anchors.top: parent.top
+      anchors.left: prev.right
+      width: 70
+
+    OtsHostingHeaderLabel
+      id: state
+      !text: tr('State')
+      anchors.top: parent.top
+      anchors.left: prev.right
+      width: 80
+
+    OtsHostingHeaderLabel
+      id: ping
+      !text: tr('Ping')
+      anchors.top: parent.top
+      anchors.left: prev.right
+      width: 55
+
+    OtsHostingHeaderLabel
+      id: priority
+      !text: tr('Prio')
+      anchors.top: parent.top
+      anchors.left: prev.right
+      width: 40
+
+    OtsHostingHeaderLabel
+      id: sessions
+      !text: tr('Sess')
+      anchors.top: parent.top
+      anchors.left: prev.right
+      width: 40
+
+    OtsHostingHeaderLabel
+      id: traffic
+      !text: tr('Traffic')
+      anchors.top: parent.top
+      anchors.left: prev.right
+      anchors.right: parent.right
+
+  HorizontalSeparator
+    anchors.top: prev.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    margin-top: 2
+
+  TextList
+    id: proxyList
+    anchors.top: prev.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: refreshButton.top
+    margin-top: 4
+    margin-bottom: 8
+    padding: 2
+    focusable: false
+    vertical-scrollbar: proxyScrollBar
+
+  VerticalScrollBar
+    id: proxyScrollBar
+    anchors.top: proxyList.top
+    anchors.bottom: proxyList.bottom
+    anchors.right: proxyList.right
+    step: 18
+    pixels-scroll: true
+
+  Label
+    id: emptyLabel
+    !text: tr('No proxies registered')
+    anchors.centerIn: proxyList
+    color: #808080
+    visible: false
+
+  Button
+    id: refreshButton
+    !text: tr('Refresh Now')
+    width: 90
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+
+  Button
+    id: closeButton
+    !text: tr('Close')
+    width: 64
+    anchors.bottom: parent.bottom
+    anchors.right: parent.right

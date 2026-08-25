@@ -174,6 +174,32 @@ std::map<std::string, uint32_t> ProxyManager::getProxies()
     return ret;
 }
 
+std::vector<ProxyStatus> ProxyManager::getProxiesStatus()
+{
+    std::vector<ProxyStatus> ret;
+    for (auto& proxy_weak : m_proxies) {
+        if (const auto proxy = proxy_weak.lock()) {
+            ret.push_back(ProxyStatus{
+                .host = proxy->getHost(),
+                .port = proxy->getPort(),
+                .webSocket = proxy->isWebSocket(),
+                .connected = proxy->isConnected(),
+                .ping = proxy->getPing(),
+                .realPing = proxy->getRealPing(),
+                .priority = static_cast<int>(proxy->getPriority()),
+                .sessions = proxy->getSessionsCount(),
+                .connections = proxy->getConnectionsCount(),
+                .packetsSent = proxy->getPacketsSent(),
+                .packetsReceived = proxy->getPacketsReceived(),
+                .bytesSent = proxy->getBytesSent(),
+                .bytesReceived = proxy->getBytesReceived(),
+                .resolvedIp = proxy->getResolvedIp(),
+            });
+        }
+    }
+    return ret;
+}
+
 std::map<std::string, std::string> ProxyManager::getProxiesDebugInfo()
 {
     std::map<std::string, std::string> ret;

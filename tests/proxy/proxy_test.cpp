@@ -37,3 +37,26 @@ TEST(ProxyTest, WebSocketProxyIsKeyedByUrlAndIgnoresPort)
     EXPECT_TRUE(manager.getProxies().empty());
     EXPECT_FALSE(manager.isActive());
 }
+
+TEST(ProxyTest, ProxiesStatusExposesTransportAndConfig)
+{
+    ProxyManager manager;
+
+    manager.addProxy("wss://proxy.example.com/otc", 0, 7);
+    manager.addProxy("proxy.example.com", 7171, 3);
+
+    const auto status = manager.getProxiesStatus();
+    ASSERT_EQ(status.size(), 2u);
+
+    EXPECT_EQ(status[0].host, "wss://proxy.example.com/otc");
+    EXPECT_EQ(status[0].port, 0);
+    EXPECT_TRUE(status[0].webSocket);
+    EXPECT_EQ(status[0].priority, 7);
+    EXPECT_FALSE(status[0].connected);
+    EXPECT_EQ(status[0].sessions, 0);
+
+    EXPECT_EQ(status[1].host, "proxy.example.com");
+    EXPECT_EQ(status[1].port, 7171);
+    EXPECT_FALSE(status[1].webSocket);
+    EXPECT_EQ(status[1].priority, 3);
+}

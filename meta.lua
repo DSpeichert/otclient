@@ -3862,6 +3862,26 @@ function g_proxy.getProxies() end
 ---@return table<string, string>
 function g_proxy.getProxiesDebugInfo() end
 
+---@class ProxyStatus
+---@field host string hostname, or the full url for WebSocket proxies
+---@field port integer 0 for WebSocket proxies
+---@field webSocket boolean
+---@field connected boolean
+---@field ping integer measured ping + priority (ranking value), ms
+---@field realPing integer measured ping, ms
+---@field priority integer
+---@field sessions integer
+---@field connections integer
+---@field packetsSent integer
+---@field packetsReceived integer
+---@field bytesSent integer
+---@field bytesReceived integer
+---@field resolvedIp string
+
+---Structured snapshot of every registered proxy, for diagnostics UIs.
+---@return ProxyStatus[]
+function g_proxy.getProxiesStatus() end
+
 ---Best ping across the connected proxies, 0 when none is connected.
 ---@return integer
 function g_proxy.getPing() end

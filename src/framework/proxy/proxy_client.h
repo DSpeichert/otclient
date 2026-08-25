@@ -82,6 +82,13 @@ public:
     uint16_t getPort() { return m_port; } // always 0 for WebSocket proxies
     std::string getDebugInfo();
     bool isActive() { return m_sessions > 0; }
+    int getSessionsCount() { return m_sessions; }
+    int getConnectionsCount() { return m_connections; }
+    int getPacketsSent() { return m_packetsSent; }
+    int getPacketsReceived() { return m_packetsRecived; }
+    int getBytesSent() { return m_bytesSent; }
+    int getBytesReceived() { return m_bytesRecived; }
+    std::string getResolvedIp() { return m_resolvedIp; }
 
     // not thread-safe
     void addSession(uint32_t id, int m_port);
