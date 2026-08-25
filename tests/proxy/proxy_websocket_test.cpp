@@ -78,6 +78,9 @@ namespace {
 
         void onPacket(ix::WebSocket& ws, const std::string& body)
         {
+            if (body.size() < 12)
+                return; // malformed proxy packet, the header alone is 12 bytes
+
             uint32_t sessionId, packetId;
             std::memcpy(&sessionId, body.data(), 4);
             std::memcpy(&packetId, body.data() + 4, 4);
