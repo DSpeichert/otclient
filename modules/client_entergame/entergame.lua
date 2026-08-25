@@ -625,6 +625,47 @@ function EnterGame.onClientVersionChange(comboBox, text, data)
     updateLabelText()
 end
 
+-- proxies announced by the login webservice (playdata.proxies), they are
+-- replaced on every login and never touch proxies configured statically
+-- (e.g. g_proxy.addProxy(...) in init.lua)
+local loginProxies = {}
+
+local function clearLoginProxies()
+    if not g_proxy then
+        return
+    end
+    for _, proxy in ipairs(loginProxies) do
+        g_proxy.removeProxy(proxy.host, proxy.port)
+    end
+    loginProxies = {}
+end
+
+local function applyLoginProxies(jsonProxies)
+    clearLoginProxies()
+    if not g_proxy or not jsonProxies or jsonProxies == '' then
+        return
+    end
+
+    local ok, proxies = pcall(json.decode, jsonProxies)
+    if not ok or type(proxies) ~= 'table' then
+        g_logger.warning('[EnterGame] ignoring invalid proxy list received from the login server')
+        return
+    end
+
+    for _, proxy in ipairs(proxies) do
+        if type(proxy) == 'table' and type(proxy.host) == 'string' and proxy.host ~= '' then
+            local port = tonumber(proxy.port) or 0
+            local priority = tonumber(proxy.priority) or 0
+            g_proxy.addProxy(proxy.host, port, priority)
+            table.insert(loginProxies, { host = proxy.host, port = port })
+        end
+    end
+
+    if #loginProxies > 0 then
+        g_logger.info(string.format('[EnterGame] %d proxy server(s) received from the login server', #loginProxies))
+    end
+end
+
 function EnterGame.tryHttpLogin(clientVersion, httpLogin)
     g_game.setClientVersion(clientVersion)
     g_game.setProtocolVersion(g_game.getClientProtocolVersion(clientVersion))
@@ -696,7 +737,7 @@ function printTable(t)
     end
 end
 
-function EnterGame.loginSuccess(requestId, jsonSession, jsonWorlds, jsonCharacters)
+function EnterGame.loginSuccess(requestId, jsonSession, jsonWorlds, jsonCharacters, jsonProxies)
     if G.requestId ~= requestId then
         return
     end
@@ -768,6 +809,10 @@ function EnterGame.loginSuccess(requestId, jsonSession, jsonWorlds, jsonCharacte
     -- set session key
     G.sessionKey = session.sessionkey
 
+    -- proxy servers to tunnel the game connection through, the world address
+    -- must be "proxy" (or 0.0.0.0) for the client to actually use them
+    applyLoginProxies(jsonProxies)
+
     onCharacterList(nil, characters, account)
 end
 
@@ -799,6 +844,9 @@ function EnterGame.doLogin()
     g_settings.set('host', G.host)
     g_settings.set('port', G.port)
     g_settings.set('client-version', clientVersion)
+
+    -- proxies belong to the server that announced them
+    clearLoginProxies()
 
     if clientVersion >= 1281 and modules.client_assets and modules.client_assets.ensureClientVersion and
         (not modules.client_assets.isEnabled or modules.client_assets.isEnabled()) and

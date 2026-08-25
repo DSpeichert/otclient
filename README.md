@@ -23,6 +23,7 @@
 10. ©️ [License](#license)
 11. ❤️ [Contributors](#contributors)
 12. 📦 [Client Assets Auto-Install](docs/client-assets-auto-install.md)
+13. 🔀 [Proxy System (TCP / WebSocket)](docs/proxy.md)
 
 ---
 

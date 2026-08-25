@@ -45,6 +45,8 @@ public:
 
     std::string getSession();
 
+    std::string getProxyList();
+
     bool parseJsonResponse(const std::string& body);
 
     void httpLogin(const std::string& host, const std::string& path,
@@ -80,6 +82,7 @@ private:
     std::string characters;
     std::string worlds;
     std::string session;
+    std::string proxies;
     std::string errorMessage;
     std::atomic<bool> cancelled;
 };

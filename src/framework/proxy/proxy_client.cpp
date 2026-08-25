@@ -65,7 +65,7 @@ void Proxy::terminate()
 std::string Proxy::getDebugInfo()
 {
     std::stringstream ss;
-    ss << "P: " << getPing() << " RP: " << getRealPing() << " In: " << m_packetsRecived << " (" << m_bytesRecived
+    ss << (m_webSocket ? "WS " : "") << "P: " << getPing() << " RP: " << getRealPing() << " In: " << m_packetsRecived << " (" << m_bytesRecived
         << ")  Out: " << m_packetsSent << " (" << m_bytesSent << ") Conns: " << m_connections << " Sess: " << m_sessions << " R: " << m_resolvedIp;
     return ss.str();
 }
@@ -102,6 +102,15 @@ void Proxy::check(const std::error_code& ec)
     });
 }
 
+bool Proxy::isWebSocketUrl(const std::string& host)
+{
+    if (host.size() < 5)
+        return false;
+    std::string prefix = host.substr(0, 6);
+    std::ranges::transform(prefix, prefix.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return prefix.starts_with("ws://") || prefix.starts_with("wss://");
+}
+
 void Proxy::connect()
 {
 #ifdef PROXY_DEBUG
@@ -112,6 +121,17 @@ void Proxy::connect()
     m_state = STATE_CONNECTING;
     m_connections += 1;
     m_sessions = 0;
+    m_lastPingSent = std::chrono::high_resolution_clock::now(); // used for connect timeout in check()
+
+    if (m_webSocket) {
+        connectWebSocket();
+    } else {
+        connectSocket();
+    }
+}
+
+void Proxy::connectSocket()
+{
     m_resolver = asio::ip::tcp::resolver(m_io);
     auto self(shared_from_this());
     m_resolver.async_resolve(m_host, "http", [self](const std::error_code& ec,
@@ -160,10 +180,144 @@ void Proxy::connect()
     });
 }
 
+void Proxy::connectWebSocket()
+{
+#ifndef __EMSCRIPTEN__
+    const uint32_t generation = ++m_wsGeneration;
+    m_wsRecvBuffer.clear();
+
+    auto ws = std::make_shared<ix::WebSocket>();
+    ws->setUrl(m_host);
+    // reconnects are driven by Proxy::check(), exactly like the socket transport
+    ws->disableAutomaticReconnection();
+    ws->setHandshakeTimeout(CHECK_INTERVAL * 5 / 1000);
+
+    ix::WebSocketHttpHeaders headers;
+    headers["User-Agent"] = "OTClient";
+    ws->setExtraHeaders(headers);
+
+    // The callback runs on the ixwebsocket thread. All proxy state lives on m_io,
+    // so every event is forwarded there. The Proxy reference obtained from the
+    // weak pointer is always moved into the posted handler: if it were released
+    // on the ixwebsocket thread and happened to be the last one, ~Proxy would
+    // stop() the websocket and try to join the very thread it runs on.
+    std::weak_ptr<Proxy> weakSelf = shared_from_this();
+    ws->setOnMessageCallback([weakSelf, generation](const ix::WebSocketMessagePtr& msg) {
+        if (!msg)
+            return;
+
+        auto self = weakSelf.lock();
+        if (!self)
+            return;
+
+        const auto type = msg->type;
+        std::string payload;
+        std::string reason;
+        if (type == ix::WebSocketMessageType::Message) {
+            payload = msg->str;
+        } else if (type == ix::WebSocketMessageType::Error) {
+            reason = msg->errorInfo.reason;
+        } else if (type == ix::WebSocketMessageType::Close) {
+            reason = msg->closeInfo.reason;
+        } else if (type != ix::WebSocketMessageType::Open) {
+            return; // ping/pong/fragment, nothing to do
+        }
+
+        auto& io = self->m_io;
+        post(io, [self = std::move(self), generation, type, payload = std::move(payload), reason = std::move(reason)] {
+            self->onWebSocketEvent(generation, type, payload, reason);
+        });
+    });
+
+    m_ws = ws;
+    ws->start();
+#else
+    g_logger.error("[Proxy {}] WebSocket proxies are not supported in this build", m_host);
+    m_state = STATE_NOT_CONNECTED;
+#endif
+}
+
+#ifndef __EMSCRIPTEN__
+void Proxy::onWebSocketEvent(const uint32_t generation, const ix::WebSocketMessageType type, const std::string& payload, [[maybe_unused]] const std::string& reason)
+{
+    if (generation != m_wsGeneration || !m_ws || m_terminated)
+        return; // event from a previous connection
+
+    switch (type) {
+        case ix::WebSocketMessageType::Open:
+            m_wsRecvBuffer.clear();
+            m_state = STATE_CONNECTING_WAIT_FOR_PING;
+            ping();
+#ifdef PROXY_DEBUG
+            g_logger.debug("[Proxy {}] connected", m_host);
+#endif
+            break;
+        case ix::WebSocketMessageType::Message:
+            onWebSocketData(payload);
+            break;
+        case ix::WebSocketMessageType::Error:
+        case ix::WebSocketMessageType::Close:
+#ifdef PROXY_DEBUG
+            g_logger.debug("[Proxy {}] websocket {}: {}", m_host, type == ix::WebSocketMessageType::Error ? "error" : "closed", reason);
+#endif
+            disconnect();
+            break;
+        default:
+            break;
+    }
+}
+
+// WebSocket messages are not guaranteed to map 1:1 to proxy packets (a relay
+// may coalesce or split them), so the stream is reassembled using the 2 byte
+// size prefix of every proxy packet, the same framing the socket transport reads.
+bool Proxy::onWebSocketData(const std::string& data)
+{
+    m_wsRecvBuffer.append(data);
+
+    std::size_t offset = 0;
+    while (m_wsRecvBuffer.size() - offset >= 2) {
+        uint16_t packetSize;
+        std::memcpy(&packetSize, m_wsRecvBuffer.data() + offset, 2);
+        if (packetSize < 12 || packetSize > BUFFER_SIZE) {
+#ifdef PROXY_DEBUG
+            g_logger.debug("[Proxy {}] websocket wrong packet size {}", m_host, packetSize);
+#endif
+            disconnect();
+            return false;
+        }
+        if (m_wsRecvBuffer.size() - offset < 2u + packetSize)
+            break; // wait for the rest of the packet
+
+        std::memcpy(m_buffer, m_wsRecvBuffer.data() + offset + 2, packetSize);
+        offset += 2u + packetSize;
+
+        m_packetsRecived += 1;
+        m_bytesRecived += 2 + packetSize;
+        if (!handlePacket(packetSize))
+            return false;
+    }
+
+    m_wsRecvBuffer.erase(0, offset);
+    return true;
+}
+#endif
+
 void Proxy::disconnect()
 {
     std::error_code ec;
     m_socket.close(ec);
+#ifndef __EMSCRIPTEN__
+    if (m_ws) {
+        // invalidate callbacks of this connection before stopping it; stop()
+        // joins the ixwebsocket thread, which is safe here because proxy code
+        // never runs on that thread
+        ++m_wsGeneration;
+        const auto ws = std::move(m_ws);
+        ws->stop();
+    }
+    m_wsRecvBuffer.clear();
+#endif
+    m_sendQueue.clear();
     m_state = STATE_NOT_CONNECTED;
     m_ping = CHECK_INTERVAL * 2;
 }
@@ -244,7 +398,7 @@ void Proxy::onHeader(const std::error_code& ec, const std::size_t bytes_transfer
 
 void Proxy::onPacket(const std::error_code& ec, const std::size_t bytes_transferred)
 {
-    if (ec || bytes_transferred < 12) {
+    if (ec) {
 #ifdef PROXY_DEBUG
         g_logger.debug("[Proxy {}] onPacket error {}", m_host, ec.message());
 #endif
@@ -252,13 +406,29 @@ void Proxy::onPacket(const std::error_code& ec, const std::size_t bytes_transfer
     }
     m_bytesRecived += static_cast<int>(bytes_transferred);
 
+    if (!handlePacket(bytes_transferred))
+        return;
+
+    readHeader();
+}
+
+bool Proxy::handlePacket(const std::size_t size)
+{
+    if (size < 12) {
+#ifdef PROXY_DEBUG
+        g_logger.debug("[Proxy {}] handlePacket error, packet too short: {}", m_host, size);
+#endif
+        disconnect();
+        return false;
+    }
+
     uint32_t sessionId = *(uint32_t*)(&m_buffer[0]);
     const uint32_t packetId = *(uint32_t*)(&m_buffer[4]);
     const uint32_t lastRecivedPacketId = *(uint32_t*)(&m_buffer[8]);
 
     if (sessionId == 0) {
-        readHeader();
-        return onPing(packetId);
+        onPing(packetId);
+        return true;
     }
     if (packetId == 0xFFFFFFFFu) {
 #ifdef PROXY_DEBUG
@@ -270,8 +440,7 @@ void Proxy::onPacket(const std::error_code& ec, const std::size_t bytes_transfer
                 session->terminate();
             }
         }
-        readHeader();
-        return;
+        return true;
     }
 
     const uint16_t packetSize = *(uint16_t*)(&m_buffer[12]);
@@ -287,11 +456,30 @@ void Proxy::onPacket(const std::error_code& ec, const std::size_t bytes_transfer
             session->onProxyPacket(packetId, lastRecivedPacketId, packet);
         }
     }
-    readHeader();
+    return true;
 }
 
 void Proxy::send(const ProxyPacketPtr& packet)
 {
+    if (m_webSocket) {
+#ifndef __EMSCRIPTEN__
+        if (!m_ws)
+            return;
+        // ixwebsocket serializes writes internally; sendBinary fails when the
+        // connection is not open, which the socket transport reports via onSent
+        const auto info = m_ws->sendBinary(std::string(packet->begin(), packet->end()));
+        if (!info.success) {
+#ifdef PROXY_DEBUG
+            g_logger.debug("[Proxy {}] websocket send error", m_host);
+#endif
+            return disconnect();
+        }
+        m_packetsSent += 1;
+        m_bytesSent += static_cast<int>(packet->size());
+#endif
+        return;
+    }
+
     const bool sendNow = m_sendQueue.empty();
     m_sendQueue.push_back(packet);
     if (sendNow) {

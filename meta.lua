@@ -3828,6 +3828,45 @@ function g_resources.createArchive(files) end
 function g_resources.decompressArchive(dataOrPath) end
 
 --------------------------------
+------------ g_proxy -----------
+--------------------------------
+
+---Proxy servers the game connection is tunnelled through when the world
+---address is "proxy" or 0.0.0.0 (or 127.0.0.1 while proxies are active).
+---See docs/proxy.md
+---@class g_proxy
+g_proxy = {}
+
+---Registers a proxy server. `host` is either a hostname/ip used together with
+---`port`, or a ws:// / wss:// url in which case `port` is ignored and the proxy
+---protocol is tunnelled over a WebSocket. Lower `priority` (ms added to the
+---measured ping) is preferred.
+---@param host string
+---@param port integer
+---@param priority integer
+function g_proxy.addProxy(host, port, priority) end
+
+---@param host string
+---@param port integer
+function g_proxy.removeProxy(host, port) end
+
+---Removes every proxy and terminates all proxied sessions.
+function g_proxy.clear() end
+
+---@param value integer
+function g_proxy.setMaxActiveProxies(value) end
+
+---@return table<string, integer> ping in ms by proxy ("host:port" or url)
+function g_proxy.getProxies() end
+
+---@return table<string, string>
+function g_proxy.getProxiesDebugInfo() end
+
+---Best ping across the connected proxies, 0 when none is connected.
+---@return integer
+function g_proxy.getPing() end
+
+--------------------------------
 ------------ Config ------------
 --------------------------------
 

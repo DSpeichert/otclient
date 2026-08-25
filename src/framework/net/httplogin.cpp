@@ -151,6 +151,7 @@ LoginHttp::LoginHttp() {
     this->characters.clear();
     this->worlds.clear();
     this->session.clear();
+    this->proxies.clear();
     this->errorMessage.clear();
     this->cancelled.store(false);
 }
@@ -217,6 +218,8 @@ std::string LoginHttp::getWorldList() { return this->worlds; }
 
 std::string LoginHttp::getSession() { return this->session; }
 
+std::string LoginHttp::getProxyList() { return this->proxies; }
+
 void LoginHttp::httpLogin(const std::string& host, const std::string& path,
                           uint16_t port, const std::string& email,
                           const std::string& password, int request_id, bool httpLogin, const std::string& token) {
@@ -238,7 +241,7 @@ void LoginHttp::httpLogin(const std::string& host, const std::string& path,
                 if (cancelled.load()) return;
                 g_lua.callGlobalField("EnterGame", "loginSuccess", request_id,
                 this->getSession(), this->getWorldList(),
-                this->getCharacterList());
+                this->getCharacterList(), this->getProxyList());
             });
         } else {
             int status = 0;
@@ -351,7 +354,7 @@ void LoginHttp::httpLogin(const std::string& host, const std::string& path,
                 if (cancelled.load()) return;
                 g_lua.callGlobalField("EnterGame", "loginSuccess", request_id,
                 this->getSession(), this->getWorldList(),
-                this->getCharacterList());
+                this->getCharacterList(), this->getProxyList());
             });
         } else {
             int status = 0;
@@ -493,6 +496,15 @@ bool LoginHttp::parseJsonResponse(const std::string& body) {
     this->session = to_string(responseJson["session"]);
     this->characters = to_string(playdata["characters"]);
     this->worlds = to_string(playdata["worlds"]);
+
+    // optional list of proxy servers ({host, port, priority}) the client should
+    // route the game connection through, see docs/proxy.md
+    this->proxies = "[]";
+    if (playdata.contains("proxies") && playdata["proxies"].is_array()) {
+        this->proxies = to_string(playdata["proxies"]);
+    } else if (responseJson.contains("proxies") && responseJson["proxies"].is_array()) {
+        this->proxies = to_string(responseJson["proxies"]);
+    }
 
     return true;
 }
