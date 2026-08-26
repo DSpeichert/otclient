@@ -23,6 +23,7 @@ local nextRefreshAt = nil
 local refreshPending = false
 local window = nil
 local topMenuButton = nil
+local gameButton = nil
 
 -- one entry of the discovery response: { host = "name:port" | "wss://...", priority = n }
 local function parseEntry(entry)
@@ -193,8 +194,12 @@ function OTSHosting:toggle()
         window:focus()
         updateWindow()
     end
+    local visible = window:isVisible()
     if topMenuButton then
-        topMenuButton:setOn(window:isVisible())
+        topMenuButton:setOn(visible)
+    end
+    if gameButton then
+        gameButton:setOn(visible)
     end
 end
 
@@ -238,11 +243,22 @@ function OTSHosting:onInit()
         if topMenuButton then
             topMenuButton:setOn(visible)
         end
+        if gameButton then
+            gameButton:setOn(visible)
+        end
     end
 
     topMenuButton = modules.client_topmenu.addTopRightToggleButton('otshostingButton',
                                                                    tr('Proxy Diagnostics') .. ' (Ctrl+Shift+P)',
                                                                    '/images/topbuttons/debug', function()
+        OTSHosting:toggle()
+    end)
+
+    -- the top menu toggles panel is only shown on the login screen; in game the
+    -- icons live in the main panel, so register a second button there
+    gameButton = modules.client_topmenu.addRightGameToggleButton('otshostingGameButton',
+                                                                 tr('Proxy Diagnostics') .. ' (Ctrl+Shift+P)',
+                                                                 '/images/options/analyzers', function()
         OTSHosting:toggle()
     end)
 
@@ -268,6 +284,10 @@ function OTSHosting:onTerminate()
     if topMenuButton then
         topMenuButton:destroy()
         topMenuButton = nil
+    end
+    if gameButton then
+        gameButton:destroy()
+        gameButton = nil
     end
     if window then
         window:destroy()
