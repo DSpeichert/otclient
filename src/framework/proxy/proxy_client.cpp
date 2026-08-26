@@ -121,6 +121,7 @@ void Proxy::connect()
     m_state = STATE_CONNECTING;
     m_connections += 1;
     m_sessions = 0;
+    ++m_generation; // invalidate handlers of any previous connection
     m_lastPingSent = std::chrono::high_resolution_clock::now(); // used for connect timeout in check()
 
     if (m_webSocket) {
@@ -134,8 +135,10 @@ void Proxy::connectSocket()
 {
     m_resolver = asio::ip::tcp::resolver(m_io);
     auto self(shared_from_this());
-    m_resolver.async_resolve(m_host, "http", [self](const std::error_code& ec,
+    m_resolver.async_resolve(m_host, "http", [self, gen = m_generation](const std::error_code& ec,
                              asio::ip::tcp::resolver::results_type results) {
+        if (gen != self->m_generation)
+            return;
         auto endpoint = asio::ip::tcp::endpoint();
         if (ec || results.empty()) {
 #ifdef PROXY_DEBUG
@@ -155,7 +158,9 @@ void Proxy::connectSocket()
         self->m_resolvedIp = endpoint.address().to_string();
         self->m_socket = asio::ip::tcp::socket(self->m_io);
         self->m_lastPingSent = std::chrono::high_resolution_clock::now(); // used for async_connect timeout
-        self->m_socket.async_connect(endpoint, [self, endpoint](const std::error_code& ec) {
+        self->m_socket.async_connect(endpoint, [self, endpoint, gen](const std::error_code& ec) {
+            if (gen != self->m_generation)
+                return;
             if (ec) {
                 self->m_state = STATE_NOT_CONNECTED;
                 return;
@@ -183,7 +188,7 @@ void Proxy::connectSocket()
 void Proxy::connectWebSocket()
 {
 #ifndef __EMSCRIPTEN__
-    const uint32_t generation = ++m_wsGeneration;
+    const uint32_t generation = m_generation;
     m_wsRecvBuffer.clear();
 
     auto ws = std::make_shared<ix::WebSocket>();
@@ -240,7 +245,7 @@ void Proxy::connectWebSocket()
 #ifndef __EMSCRIPTEN__
 void Proxy::onWebSocketEvent(const uint32_t generation, const ix::WebSocketMessageType type, const std::string& payload, [[maybe_unused]] const std::string& reason)
 {
-    if (generation != m_wsGeneration || !m_ws || m_terminated)
+    if (generation != m_generation || !m_ws || m_terminated)
         return; // event from a previous connection
 
     switch (type) {
@@ -311,12 +316,12 @@ void Proxy::disconnect()
         // invalidate callbacks of this connection before stopping it; stop()
         // joins the ixwebsocket thread, which is safe here because proxy code
         // never runs on that thread
-        ++m_wsGeneration;
         const auto ws = std::move(m_ws);
         ws->stop();
     }
     m_wsRecvBuffer.clear();
 #endif
+    ++m_generation; // pending handlers of this connection must not touch the next one
     m_sendQueue.clear();
     m_state = STATE_NOT_CONNECTED;
     m_ping = CHECK_INTERVAL * 2;
@@ -366,7 +371,9 @@ void Proxy::removeSession(const uint32_t id)
 
 void Proxy::readHeader()
 {
-    async_read(m_socket, asio::buffer(m_buffer, 2), [capture0 = shared_from_this()](auto&& PH1, auto&& PH2) {
+    async_read(m_socket, asio::buffer(m_buffer, 2), [capture0 = shared_from_this(), gen = m_generation](auto&& PH1, auto&& PH2) {
+        if (gen != capture0->m_generation)
+            return; // read of a connection that was already torn down
         capture0->onHeader(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2));
     });
 }
@@ -391,7 +398,9 @@ void Proxy::onHeader(const std::error_code& ec, const std::size_t bytes_transfer
         return disconnect();
     }
 
-    async_read(m_socket, asio::buffer(m_buffer, packetSize), [capture0 = shared_from_this()](auto&& PH1, auto&& PH2) {
+    async_read(m_socket, asio::buffer(m_buffer, packetSize), [capture0 = shared_from_this(), gen = m_generation](auto&& PH1, auto&& PH2) {
+        if (gen != capture0->m_generation)
+            return;
         capture0->onPacket(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2));
     });
 }
@@ -488,7 +497,9 @@ void Proxy::send(const ProxyPacketPtr& packet)
     m_sendQueue.push_back(packet);
     if (sendNow) {
         async_write(m_socket, asio::buffer(packet->data(), packet->size()),
-                    [capture0 = shared_from_this()](auto&& PH1, auto&& PH2) {
+                    [capture0 = shared_from_this(), gen = m_generation](auto&& PH1, auto&& PH2) {
+            if (gen != capture0->m_generation)
+                return;
             capture0->onSent(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2));
         });
     }
@@ -504,10 +515,14 @@ void Proxy::onSent(const std::error_code& ec, const std::size_t bytes_transferre
     }
     m_packetsSent += 1;
     m_bytesSent += static_cast<int>(bytes_transferred);
+    if (m_sendQueue.empty())
+        return; // queue was reset by a reconnect while this write completed
     m_sendQueue.pop_front();
     if (!m_sendQueue.empty()) {
         async_write(m_socket, asio::buffer(m_sendQueue.front()->data(), m_sendQueue.front()->size()),
-                    [capture0 = shared_from_this()](auto&& PH1, auto&& PH2) {
+                    [capture0 = shared_from_this(), gen = m_generation](auto&& PH1, auto&& PH2) {
+            if (gen != capture0->m_generation)
+                return;
             capture0->onSent(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2));
         });
     }
@@ -540,8 +555,11 @@ void Session::terminate(std::error_code ec)
     g_logger.debug("[Session {}] terminate", m_id);
 #endif
 
+    // self must be captured by value: nothing else keeps the session alive
+    // once the check() timer sees m_terminated, and this lambda dereferences
+    // members (and calls m_disconnectCallback) after that point
     auto self(shared_from_this());
-    post(m_io, [&, ec] {
+    post(m_io, [this, self, ec] {
         g_sessions.erase(m_id);
         if (m_useSocket) {
             std::error_code ecc;
@@ -741,7 +759,7 @@ void Session::onPacket(const ProxyPacketPtr& packet)
     }
 
     auto self(shared_from_this());
-    post(m_io, [&, packet] {
+    post(m_io, [this, self, packet] {
         const uint32_t packetId = m_outputPacketId++;
         const auto newPacket = std::make_shared<ProxyPacket>(packet->size() + 14);
 
