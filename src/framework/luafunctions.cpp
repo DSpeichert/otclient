@@ -912,6 +912,7 @@ void Application::registerLuaFunctions()
     g_lua.bindSingletonFunction("g_proxy", "setMaxActiveProxies", &ProxyManager::setMaxActiveProxies, &g_proxy);
     g_lua.bindSingletonFunction("g_proxy", "getProxies", &ProxyManager::getProxies, &g_proxy);
     g_lua.bindSingletonFunction("g_proxy", "getProxiesDebugInfo", &ProxyManager::getProxiesDebugInfo, &g_proxy);
+    g_lua.bindSingletonFunction("g_proxy", "getProxiesStatus", &ProxyManager::getProxiesStatus, &g_proxy);
     g_lua.bindSingletonFunction("g_proxy", "getPing", &ProxyManager::getPing, &g_proxy);
 
     g_lua.registerSingletonClass("g_http");

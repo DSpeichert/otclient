@@ -421,6 +421,35 @@ function EnterGame.clearAccountFields()
   g_settings.remove('password')
 end
 
+-- hides the server selection (used by ./otshosting when a proxy makes the
+-- server address irrelevant); optionally prefills the hidden server field with
+-- host:port[:version], the format EnterGame.doLogin expects
+function EnterGame.hideServerFields(host, port, version)
+  if not enterGame then return end
+
+  if host and host ~= '' then
+    local server = host
+    if port then
+      server = server .. ':' .. tostring(port)
+    end
+    if version then
+      server = server .. ':' .. tostring(version)
+      clientVersionSelector:setOption(tonumber(version))
+    end
+    serverHostTextEdit:setText(server)
+    g_settings.set('host', server)
+  end
+
+  if serverSelectorPanel:isOn() then
+    enterGame:setHeight(enterGame:getHeight() - serverSelectorPanel:getHeight())
+    serverSelectorPanel:setOn(false)
+  end
+  if customServerSelectorPanel:isOn() then
+    enterGame:setHeight(enterGame:getHeight() - customServerSelectorPanel:getHeight())
+    customServerSelectorPanel:setOn(false)
+  end
+end
+
 function EnterGame.onServerChange()
   server = serverSelector:getText()
   if server == tr("Another") then

@@ -10,7 +10,14 @@ Services = {
   stats = "",
   crash = "http://otclient.ovh/api/crash.php",
   feedback = "http://otclient.ovh/api/feedback.php",
-  status = "http://otclient.ovh/api/status.php"
+  status = "http://otclient.ovh/api/status.php",
+  --otshosting = { -- ./otshosting: OTShield proxy discovery for servers hosted on otshosting.pl
+  --  subdomain = "myserver", -- activates the module; the `myserver` part of myserver.ots.ovh
+  --  refreshInterval = 300, -- seconds between proxy list refreshes (the API caches for up to 60s)
+  --  hideServerFields = true, -- hide the server selection on the login screen
+  --  host = "proxy", port = 7171, version = 1098, -- optional: prefill the (hidden) server field with host:port:version
+  --  url = "https://otshosting.pl/api/proxy/", -- discovery endpoint override, mainly for testing
+  --},
 }
 
 -- Servers accept http login url, websocket login url or ip:port:version
