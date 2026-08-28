@@ -516,9 +516,12 @@ bool Proxy::handlePacket(std::size_t size)
         return false;
     }
 
-    uint32_t sessionId = *(uint32_t*)(&m_buffer[0]);
-    uint32_t packetId = *(uint32_t*)(&m_buffer[4]);
-    uint32_t lastRecivedPacketId = *(uint32_t*)(&m_buffer[8]);
+    // m_buffer is a byte array, read the header fields with memcpy so the
+    // reads are neither misaligned nor strict-aliasing violations
+    uint32_t sessionId, packetId, lastRecivedPacketId;
+    std::memcpy(&sessionId, &m_buffer[0], 4);
+    std::memcpy(&packetId, &m_buffer[4], 4);
+    std::memcpy(&lastRecivedPacketId, &m_buffer[8], 4);
 
     if (sessionId == 0) {
         onPing(packetId);
@@ -537,7 +540,8 @@ bool Proxy::handlePacket(std::size_t size)
         return true;
     }
 
-    uint16_t packetSize = *(uint16_t*)(&m_buffer[12]);
+    uint16_t packetSize;
+    std::memcpy(&packetSize, &m_buffer[12], 2);
 
 #ifdef PROXY_DEBUG
     //std::clog << "[Proxy " << m_host << "] onPacket, session: " << sessionId << " packetId: " << packetId << " lastRecivedPacket: " << lastRecivedPacketId << " size: " << packetSize << std::endl;
