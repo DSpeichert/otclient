@@ -1,6 +1,7 @@
 #include <framework/global.h>
 #include "proxy.h"
 #include <framework/stdext/stdext.h>
+#include <future>
 
 ProxyManager g_proxy;
 
@@ -155,9 +156,20 @@ std::map<std::string, uint32_t> ProxyManager::getProxies()
 
 std::vector<ProxyStatus> ProxyManager::getProxiesStatus()
 {
-    std::vector<ProxyStatus> ret;
+    // m_proxies belongs to the calling thread but the Proxy fields are mutated
+    // on the proxy io thread only, so the live proxies are collected here and
+    // their fields are read on m_io: the diagnostics UI polls this every second
+    // and must not race the io thread
+    std::vector<ProxyPtr> proxies;
     for (auto& proxy_weak : m_proxies) {
-        if (auto proxy = proxy_weak.lock()) {
+        if (auto proxy = proxy_weak.lock())
+            proxies.push_back(proxy);
+    }
+
+    auto snapshot = [proxies] {
+        std::vector<ProxyStatus> ret;
+        ret.reserve(proxies.size());
+        for (const auto& proxy : proxies) {
             ProxyStatus status;
             status.host = proxy->getHost();
             status.port = proxy->getPort();
@@ -175,8 +187,21 @@ std::vector<ProxyStatus> ProxyManager::getProxiesStatus()
             status.resolvedIp = proxy->getResolvedIp();
             ret.push_back(status);
         }
-    }
-    return ret;
+        return ret;
+    };
+
+    if (!m_working)
+        return snapshot(); // no io thread running, nothing can race
+
+    auto promise = std::make_shared<std::promise<std::vector<ProxyStatus>>>();
+    auto future = promise->get_future();
+    boost::asio::post(m_io, [promise, snapshot] {
+        promise->set_value(snapshot());
+    });
+    // never block the caller for long, a stalled io thread just yields an empty snapshot
+    if (future.wait_for(std::chrono::milliseconds(250)) != std::future_status::ready)
+        return {};
+    return future.get();
 }
 
 std::map<std::string, std::string> ProxyManager::getProxiesDebugInfo()

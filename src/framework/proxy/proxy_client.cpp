@@ -3,6 +3,7 @@
 #include <framework/global.h>
 #include <iostream>
 #include <sstream>
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 
@@ -585,7 +586,9 @@ void Proxy::send(const ProxyPacketPtr& packet)
 // single outstanding write, so the queue is drained from onSent one by one
 void Proxy::writeNext()
 {
-    const auto& packet = m_sendQueue.front();
+    // the handler keeps the packet alive: disconnect() resets the queue while
+    // a write may still be in flight
+    const auto packet = m_sendQueue.front();
     if (m_webSocket) {
 #ifndef __EMSCRIPTEN__
         if (!m_ws)
@@ -594,7 +597,7 @@ void Proxy::writeNext()
         const auto conn = m_ws;
         const uint32_t generation = m_generation;
         conn->withStream([&](auto& ws) {
-            ws.async_write(boost::asio::buffer(packet->data(), packet->size()), [self, conn, generation](const boost::system::error_code& ec, std::size_t bytes_transferred) {
+            ws.async_write(boost::asio::buffer(packet->data(), packet->size()), [self, conn, generation, packet](const boost::system::error_code& ec, std::size_t bytes_transferred) {
                 if (generation != self->m_generation)
                     return;
                 self->onSent(ec, bytes_transferred);
@@ -604,7 +607,7 @@ void Proxy::writeNext()
         return;
     }
     auto self(shared_from_this());
-    boost::asio::async_write(m_socket, boost::asio::buffer(packet->data(), packet->size()), [self, gen = m_generation](const boost::system::error_code& ec, std::size_t bytes_transferred) {
+    boost::asio::async_write(m_socket, boost::asio::buffer(packet->data(), packet->size()), [self, gen = m_generation, packet](const boost::system::error_code& ec, std::size_t bytes_transferred) {
         if (gen != self->m_generation)
             return;
         self->onSent(ec, bytes_transferred);
