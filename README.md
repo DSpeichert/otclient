@@ -10,6 +10,10 @@ This repository uses Github Actions to build and test OTCv8 automaticlly wheneve
 
 Check Actions tab to see test results or to download latest binaries. ![Workflow status](https://github.com/OTCv8/otcv8-dev/actions/workflows/ci-cd.yml/badge.svg)
 
+## Proxy System (TCP / WebSocket)
+
+See [docs/proxy.md](docs/proxy.md).
+
 ## Compilation
 
 ### Automatic

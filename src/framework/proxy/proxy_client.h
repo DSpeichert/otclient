@@ -6,6 +6,13 @@
 
 #include <cstdint>
 #include <boost/asio.hpp>
+#ifndef __EMSCRIPTEN__
+#include <boost/asio/ssl.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/websocket.hpp>
+#include <boost/beast/ssl.hpp>
+#include <boost/beast/websocket/ssl.hpp>
+#endif
 #include <memory>
 #include <string>
 #include <list>
@@ -34,6 +41,7 @@ class Proxy : public std::enable_shared_from_this<Proxy> {
         STATE_CONNECTED
     };
 public:
+    // proxy reached over a plain TCP socket
     Proxy(boost::asio::io_context& io, const std::string& host, uint16_t port, int priority)
         : m_io(io), m_timer(io), m_socket(io), m_resolver(io), m_state(STATE_NOT_CONNECTED)
     {
@@ -41,6 +49,21 @@ public:
         m_port = port;
         m_priority = priority;
     }
+
+    // proxy reached over a WebSocket (ws:// or wss:// url). The proxy session
+    // protocol is carried unchanged inside binary WebSocket messages, so the
+    // server side only needs to unwrap WebSocket -> TCP (websockify, nginx, ...)
+    // in front of a regular proxy server.
+    Proxy(boost::asio::io_context& io, const std::string& url, int priority)
+        : m_io(io), m_timer(io), m_socket(io), m_resolver(io), m_state(STATE_NOT_CONNECTED)
+    {
+        m_host = url;
+        m_port = 0;
+        m_priority = priority;
+        m_webSocket = true;
+    }
+
+    static bool isWebSocketUrl(const std::string& host);
 
     // thread-safe
     void start();
@@ -50,8 +73,9 @@ public:
     uint32_t getRealPing() { return m_ping; }
     uint32_t getPriority() { return m_priority; }
     bool isConnected() { return m_state == STATE_CONNECTED; }
-    std::string getHost() { return m_host; }
-    uint16_t getPort() { return m_port; }
+    bool isWebSocket() const { return m_webSocket; }
+    std::string getHost() { return m_host; } // full url for WebSocket proxies
+    uint16_t getPort() { return m_port; } // always 0 for WebSocket proxies
     std::string getDebugInfo();
     bool isActive() { return m_sessions > 0; }
 
@@ -64,20 +88,66 @@ public:
 private:
     void check(const boost::system::error_code& ec = boost::system::error_code());
     void connect();
+    void connectSocket();
+    void connectWebSocket();
     void disconnect();
 
     void ping();
     void onPing(uint32_t packetId);
 
+    // plain socket transport
     void readHeader();
     void onHeader(const boost::system::error_code& ec, std::size_t bytes_transferred);
     void onPacket(const boost::system::error_code& ec, std::size_t bytes_transferred);
     void onSent(const boost::system::error_code& ec, std::size_t bytes_transferred);
 
+    // WebSocket transport (Boost.Beast, runs on m_io like the socket transport)
+#ifndef __EMSCRIPTEN__
+    using WebSocketStream = boost::beast::websocket::stream<boost::beast::tcp_stream>;
+    using SecureWebSocketStream = boost::beast::websocket::stream<boost::beast::ssl_stream<boost::beast::tcp_stream>>;
+
+    // everything a single WebSocket connection owns; kept alive by the pending
+    // handlers (they capture it) so a stream is never destroyed with operations
+    // in flight, and the ssl context always outlives the ssl stream
+    struct WebSocketConnection {
+        std::shared_ptr<boost::asio::ssl::context> sslContext;
+        std::unique_ptr<WebSocketStream> plain;
+        std::unique_ptr<SecureWebSocketStream> secure;
+        boost::beast::flat_buffer readBuffer;
+
+        template<typename Fn>
+        void withStream(Fn&& fn)
+        {
+            if (secure)
+                fn(*secure);
+            else
+                fn(*plain);
+        }
+    };
+    using WebSocketConnectionPtr = std::shared_ptr<WebSocketConnection>;
+
+    void handshakeWebSocket(uint32_t generation, const WebSocketConnectionPtr& conn);
+    void readWebSocket(uint32_t generation, const WebSocketConnectionPtr& conn);
+    bool onWebSocketData(const std::string& data);
+#endif
+    void writeNext();
+
+    // handles a complete proxy packet stored in m_buffer, returns false when the proxy got disconnected
+    bool handlePacket(std::size_t size);
+
     boost::asio::io_context& m_io;
     boost::asio::steady_timer m_timer;
     boost::asio::ip::tcp::socket m_socket;
     boost::asio::ip::tcp::resolver m_resolver;
+
+#ifndef __EMSCRIPTEN__
+    WebSocketConnectionPtr m_ws;
+    std::string m_wsHostHeader;
+    std::string m_wsTarget;
+    std::string m_wsRecvBuffer;
+    uint32_t m_wsGeneration = 0;
+#endif
+    bool m_webSocket = false;
 
     ProxyState m_state;
 

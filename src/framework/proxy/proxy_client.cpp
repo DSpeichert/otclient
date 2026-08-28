@@ -3,6 +3,8 @@
 #include <framework/global.h>
 #include <iostream>
 #include <sstream>
+#include <cctype>
+#include <cstring>
 
 #include "proxy_client.h"
 
@@ -44,7 +46,7 @@ void Proxy::terminate()
 std::string Proxy::getDebugInfo()
 {
     std::stringstream ss;
-    ss << "P: " << getPing() << " RP: " << getRealPing() << " In: " << m_packetsRecived << " (" << m_bytesRecived
+    ss << (m_webSocket ? "WS " : "") << "P: " << getPing() << " RP: " << getRealPing() << " In: " << m_packetsRecived << " (" << m_bytesRecived
         << ")  Out: " << m_packetsSent << " (" << m_bytesSent << ") Conns: " << m_connections << " Sess: " << m_sessions << " R: " << m_resolvedIp;
     return ss.str();
 }
@@ -79,6 +81,15 @@ void Proxy::check(const boost::system::error_code& ec)
     m_timer.async_wait(std::bind(&Proxy::check, shared_from_this(), std::placeholders::_1));
 }
 
+bool Proxy::isWebSocketUrl(const std::string& host)
+{
+    if (host.size() < 5)
+        return false;
+    std::string prefix = host.substr(0, 6);
+    std::transform(prefix.begin(), prefix.end(), prefix.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return prefix.rfind("ws://", 0) == 0 || prefix.rfind("wss://", 0) == 0;
+}
+
 void Proxy::connect()
 {
 #ifdef PROXY_DEBUG
@@ -89,6 +100,17 @@ void Proxy::connect()
     m_state = STATE_CONNECTING;
     m_connections += 1;
     m_sessions = 0;
+    m_lastPingSent = std::chrono::high_resolution_clock::now(); // used for connect timeout in check()
+
+    if (m_webSocket) {
+        connectWebSocket();
+    } else {
+        connectSocket();
+    }
+}
+
+void Proxy::connectSocket()
+{
     m_resolver = boost::asio::ip::tcp::resolver(m_io);
     auto self(shared_from_this());
     m_resolver.async_resolve(m_host, "http", [self](const boost::system::error_code& ec,
@@ -137,10 +159,264 @@ void Proxy::connect()
     });
 }
 
+#ifndef __EMSCRIPTEN__
+namespace {
+    struct WebSocketUrl {
+        bool secure = false;
+        std::string host;
+        std::string port;
+        std::string target;
+    };
+
+    // ws://host[:port][/path] or wss://host[:port][/path]
+    bool parseWebSocketUrl(const std::string& url, WebSocketUrl& out)
+    {
+        std::string scheme = url.substr(0, 6);
+        std::transform(scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        std::string rest;
+        if (scheme.rfind("wss://", 0) == 0) {
+            out.secure = true;
+            rest = url.substr(6);
+        } else if (scheme.rfind("ws://", 0) == 0) {
+            out.secure = false;
+            rest = url.substr(5);
+        } else {
+            return false;
+        }
+
+        const auto slash = rest.find('/');
+        const std::string authority = rest.substr(0, slash);
+        out.target = slash == std::string::npos ? "/" : rest.substr(slash);
+
+        const auto colon = authority.rfind(':');
+        if (colon != std::string::npos) {
+            out.host = authority.substr(0, colon);
+            out.port = authority.substr(colon + 1);
+        } else {
+            out.host = authority;
+            out.port = out.secure ? "443" : "80";
+        }
+
+        if (out.host.empty() || out.port.empty())
+            return false;
+        for (const char c : out.port) {
+            if (!std::isdigit(static_cast<unsigned char>(c)))
+                return false;
+        }
+        return true;
+    }
+}
+#endif
+
+void Proxy::connectWebSocket()
+{
+#ifndef __EMSCRIPTEN__
+    const uint32_t generation = ++m_wsGeneration;
+    m_wsRecvBuffer.clear();
+    m_ws.reset();
+
+    WebSocketUrl url;
+    if (!parseWebSocketUrl(m_host, url)) {
+        g_logger.error("[Proxy " + m_host + "] invalid websocket url");
+        m_state = STATE_NOT_CONNECTED;
+        return;
+    }
+
+    // the Host header carries the port only when it is not the default one
+    m_wsHostHeader = url.host;
+    if (url.port != (url.secure ? "443" : "80"))
+        m_wsHostHeader += ":" + url.port;
+    m_wsTarget = url.target;
+
+    auto conn = std::make_shared<WebSocketConnection>();
+    if (url.secure) {
+        // same TLS policy as the rest of the client (HttpSession / WebsocketSession):
+        // the certificate is not validated, the Tibia protocol inside is encrypted anyway
+        conn->sslContext = std::make_shared<boost::asio::ssl::context>(boost::asio::ssl::context::tlsv12_client);
+        conn->secure = std::make_unique<SecureWebSocketStream>(m_io, *conn->sslContext);
+        conn->secure->next_layer().set_verify_mode(boost::asio::ssl::verify_peer);
+        conn->secure->next_layer().set_verify_callback([](bool, boost::asio::ssl::verify_context&) { return true; });
+        if (!SSL_set_tlsext_host_name(conn->secure->next_layer().native_handle(), url.host.c_str())) {
+            g_logger.error("[Proxy " + m_host + "] can't set SNI host name");
+            m_state = STATE_NOT_CONNECTED;
+            return;
+        }
+    } else {
+        conn->plain = std::make_unique<WebSocketStream>(m_io);
+    }
+
+    conn->withStream([&](auto& ws) {
+        ws.binary(true);
+        ws.read_message_max(1024 * 1024);
+        ws.set_option(boost::beast::websocket::stream_base::decorator([](boost::beast::websocket::request_type& req) {
+            req.set(boost::beast::http::field::user_agent, "OTClient");
+        }));
+    });
+    m_ws = conn;
+
+    // Every handler captures the connection so it can never be destroyed with an
+    // operation in flight, and checks the generation so completions of a
+    // connection that was already torn down are ignored.
+    auto self(shared_from_this());
+    m_resolver = boost::asio::ip::tcp::resolver(m_io);
+    m_resolver.async_resolve(url.host, url.port, [self, conn, generation](const boost::system::error_code& ec,
+                                                                          boost::asio::ip::tcp::resolver::results_type results) {
+        if (generation != self->m_wsGeneration)
+            return;
+        if (ec || results.empty()) {
+#ifdef PROXY_DEBUG
+            std::clog << "[Proxy " << self->m_host << "] resolve error: " << ec.message() << std::endl;
+#endif
+            return self->disconnect();
+        }
+        self->m_resolvedIp = results.begin()->endpoint().address().to_string();
+
+        conn->withStream([&](auto& ws) {
+            boost::beast::get_lowest_layer(ws).expires_after(std::chrono::milliseconds(CHECK_INTERVAL * 5));
+            boost::beast::get_lowest_layer(ws).async_connect(results, [self, conn, generation](const boost::system::error_code& ec,
+                                                                                               const boost::asio::ip::tcp::endpoint& endpoint) {
+                if (generation != self->m_wsGeneration)
+                    return;
+                if (ec) {
+#ifdef PROXY_DEBUG
+                    std::clog << "[Proxy " << self->m_host << "] connect error: " << ec.message() << std::endl;
+#endif
+                    return self->disconnect();
+                }
+                self->m_resolvedIp = endpoint.address().to_string();
+                boost::system::error_code ecc;
+                conn->withStream([&](auto& ws) {
+                    boost::beast::get_lowest_layer(ws).socket().set_option(boost::asio::ip::tcp::no_delay(true), ecc);
+                    // handshake and ping timeouts are enforced by check(), like the
+                    // socket transport; Beast's stream timeouts must not overlap with
+                    // websocket operations
+                    boost::beast::get_lowest_layer(ws).expires_never();
+                });
+                self->handshakeWebSocket(generation, conn);
+            });
+        });
+    });
+#else
+    g_logger.error("[Proxy " + m_host + "] WebSocket proxies are not supported in this build");
+    m_state = STATE_NOT_CONNECTED;
+#endif
+}
+
+#ifndef __EMSCRIPTEN__
+void Proxy::handshakeWebSocket(uint32_t generation, const WebSocketConnectionPtr& conn)
+{
+    auto self(shared_from_this());
+    auto onHandshake = [self, conn, generation](const boost::system::error_code& ec) {
+        if (generation != self->m_wsGeneration)
+            return;
+        if (ec) {
+#ifdef PROXY_DEBUG
+            std::clog << "[Proxy " << self->m_host << "] websocket handshake error: " << ec.message() << std::endl;
+#endif
+            return self->disconnect();
+        }
+        self->m_wsRecvBuffer.clear();
+        self->m_state = STATE_CONNECTING_WAIT_FOR_PING;
+        self->readWebSocket(generation, conn);
+        self->ping();
+#ifdef PROXY_DEBUG
+        std::clog << "[Proxy " << self->m_host << "] connected" << std::endl;
+#endif
+    };
+
+    if (conn->secure) {
+        conn->secure->next_layer().async_handshake(boost::asio::ssl::stream_base::client, [self, conn, generation, onHandshake](const boost::system::error_code& ec) {
+            if (generation != self->m_wsGeneration)
+                return;
+            if (ec) {
+#ifdef PROXY_DEBUG
+                std::clog << "[Proxy " << self->m_host << "] ssl handshake error: " << ec.message() << std::endl;
+#endif
+                return self->disconnect();
+            }
+            conn->secure->async_handshake(self->m_wsHostHeader, self->m_wsTarget, onHandshake);
+        });
+    } else {
+        conn->plain->async_handshake(m_wsHostHeader, m_wsTarget, onHandshake);
+    }
+}
+
+void Proxy::readWebSocket(uint32_t generation, const WebSocketConnectionPtr& conn)
+{
+    auto self(shared_from_this());
+    conn->withStream([&](auto& ws) {
+        ws.async_read(conn->readBuffer, [self, conn, generation](const boost::system::error_code& ec, std::size_t) {
+            if (generation != self->m_wsGeneration)
+                return;
+            if (ec) {
+#ifdef PROXY_DEBUG
+                std::clog << "[Proxy " << self->m_host << "] websocket read error: " << ec.message() << std::endl;
+#endif
+                return self->disconnect();
+            }
+            const std::string data = boost::beast::buffers_to_string(conn->readBuffer.data());
+            conn->readBuffer.consume(conn->readBuffer.size());
+            if (!self->onWebSocketData(data))
+                return;
+            self->readWebSocket(generation, conn);
+        });
+    });
+}
+
+// WebSocket messages are not guaranteed to map 1:1 to proxy packets (a relay
+// may coalesce or split them), so the stream is reassembled using the 2 byte
+// size prefix of every proxy packet, the same framing the socket transport reads.
+bool Proxy::onWebSocketData(const std::string& data)
+{
+    m_wsRecvBuffer.append(data);
+
+    std::size_t offset = 0;
+    while (m_wsRecvBuffer.size() - offset >= 2) {
+        uint16_t packetSize;
+        std::memcpy(&packetSize, m_wsRecvBuffer.data() + offset, 2);
+        if (packetSize < 12 || packetSize > BUFFER_SIZE) {
+#ifdef PROXY_DEBUG
+            std::clog << "[Proxy " << m_host << "] websocket wrong packet size " << packetSize << std::endl;
+#endif
+            disconnect();
+            return false;
+        }
+        if (m_wsRecvBuffer.size() - offset < 2u + packetSize)
+            break; // wait for the rest of the packet
+
+        std::memcpy(m_buffer, m_wsRecvBuffer.data() + offset + 2, packetSize);
+        offset += 2u + packetSize;
+
+        m_packetsRecived += 1;
+        m_bytesRecived += 2 + packetSize;
+        if (!handlePacket(packetSize))
+            return false;
+    }
+
+    m_wsRecvBuffer.erase(0, offset);
+    return true;
+}
+#endif
+
 void Proxy::disconnect()
 {
     boost::system::error_code ec;
     m_socket.close(ec);
+#ifndef __EMSCRIPTEN__
+    // invalidate the handlers of this connection first, then just close the
+    // underlying socket: a websocket close handshake would need the peer and
+    // pending handlers keep the stream alive until they complete
+    ++m_wsGeneration;
+    if (m_ws) {
+        m_ws->withStream([&](auto& ws) {
+            boost::beast::get_lowest_layer(ws).close();
+        });
+        m_ws.reset();
+    }
+    m_wsRecvBuffer.clear();
+#endif
+    m_sendQueue.clear();
     m_state = STATE_NOT_CONNECTED;
     m_ping = CHECK_INTERVAL * 2;
 }
@@ -216,7 +492,7 @@ void Proxy::onHeader(const boost::system::error_code& ec, std::size_t bytes_tran
 
 void Proxy::onPacket(const boost::system::error_code& ec, std::size_t bytes_transferred)
 {
-    if (ec || bytes_transferred < 12) {
+    if (ec) {
 #ifdef PROXY_DEBUG
         std::clog << "[Proxy " << m_host << "] onPacket error " << ec.message() << std::endl;
 #endif
@@ -224,13 +500,29 @@ void Proxy::onPacket(const boost::system::error_code& ec, std::size_t bytes_tran
     }
     m_bytesRecived += bytes_transferred;
 
+    if (!handlePacket(bytes_transferred))
+        return;
+
+    readHeader();
+}
+
+bool Proxy::handlePacket(std::size_t size)
+{
+    if (size < 12) {
+#ifdef PROXY_DEBUG
+        std::clog << "[Proxy " << m_host << "] handlePacket error, packet too short: " << size << std::endl;
+#endif
+        disconnect();
+        return false;
+    }
+
     uint32_t sessionId = *(uint32_t*)(&m_buffer[0]);
     uint32_t packetId = *(uint32_t*)(&m_buffer[4]);
     uint32_t lastRecivedPacketId = *(uint32_t*)(&m_buffer[8]);
 
     if (sessionId == 0) {
-        readHeader();
-        return onPing(packetId);
+        onPing(packetId);
+        return true;
     }
     if (packetId == 0xFFFFFFFFu) {
 #ifdef PROXY_DEBUG
@@ -242,8 +534,7 @@ void Proxy::onPacket(const boost::system::error_code& ec, std::size_t bytes_tran
                 session->terminate();
             }
         }
-        readHeader();
-        return;
+        return true;
     }
 
     uint16_t packetSize = *(uint16_t*)(&m_buffer[12]);
@@ -259,7 +550,7 @@ void Proxy::onPacket(const boost::system::error_code& ec, std::size_t bytes_tran
             session->onProxyPacket(packetId, lastRecivedPacketId, packet);
         }
     }
-    readHeader();
+    return true;
 }
 
 
@@ -268,8 +559,33 @@ void Proxy::send(const ProxyPacketPtr& packet)
     bool sendNow = m_sendQueue.empty();
     m_sendQueue.push_back(packet);
     if (sendNow) {
-        boost::asio::async_write(m_socket, boost::asio::buffer(packet->data(), packet->size()), std::bind(&Proxy::onSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2));
+        writeNext();
     }
+}
+
+// writes the packet at the front of the send queue; both transports allow a
+// single outstanding write, so the queue is drained from onSent one by one
+void Proxy::writeNext()
+{
+    const auto& packet = m_sendQueue.front();
+    if (m_webSocket) {
+#ifndef __EMSCRIPTEN__
+        if (!m_ws)
+            return; // not connected, connect() resets the queue
+        auto self(shared_from_this());
+        const auto conn = m_ws;
+        const uint32_t generation = m_wsGeneration;
+        conn->withStream([&](auto& ws) {
+            ws.async_write(boost::asio::buffer(packet->data(), packet->size()), [self, conn, generation](const boost::system::error_code& ec, std::size_t bytes_transferred) {
+                if (generation != self->m_wsGeneration)
+                    return;
+                self->onSent(ec, bytes_transferred);
+            });
+        });
+#endif
+        return;
+    }
+    boost::asio::async_write(m_socket, boost::asio::buffer(packet->data(), packet->size()), std::bind(&Proxy::onSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2));
 }
 
 void Proxy::onSent(const boost::system::error_code& ec, std::size_t bytes_transferred)
@@ -284,8 +600,7 @@ void Proxy::onSent(const boost::system::error_code& ec, std::size_t bytes_transf
     m_bytesSent += bytes_transferred;
     m_sendQueue.pop_front();
     if (!m_sendQueue.empty()) {
-        boost::asio::async_write(m_socket, boost::asio::buffer(m_sendQueue.front()->data(), m_sendQueue.front()->size()),
-                                 std::bind(&Proxy::onSent, shared_from_this(), std::placeholders::_1, std::placeholders::_2));
+        writeNext();
     }
 }
 

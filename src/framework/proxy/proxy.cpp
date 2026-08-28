@@ -49,8 +49,22 @@ bool ProxyManager::isActive()
     return m_proxies.size() > 0;
 }
 
+namespace {
+    std::string proxyKey(const ProxyPtr& proxy)
+    {
+        if (proxy->isWebSocket())
+            return proxy->getHost();
+        return proxy->getHost() + ":" + std::to_string(proxy->getPort());
+    }
+}
+
 void ProxyManager::addProxy(const std::string& host, uint16_t port, int priority)
 {
+    // a ws:// or wss:// url carries its own port, the port argument is ignored
+    const bool webSocket = Proxy::isWebSocketUrl(host);
+    if (webSocket)
+        port = 0;
+
     for (auto& proxy_weak : m_proxies) {
         if (auto proxy = proxy_weak.lock()) {
             if (proxy->getHost() == host && proxy->getPort() == port) {
@@ -59,13 +73,18 @@ void ProxyManager::addProxy(const std::string& host, uint16_t port, int priority
         }
     }
 
-    auto proxy = std::make_shared<Proxy>(m_io, host, port, priority);
+    auto proxy = webSocket
+        ? std::make_shared<Proxy>(m_io, host, priority)
+        : std::make_shared<Proxy>(m_io, host, port, priority);
     proxy->start();
     m_proxies.push_back(proxy);
 }
 
 void ProxyManager::removeProxy(const std::string& host, uint16_t port)
 {
+    if (Proxy::isWebSocketUrl(host))
+        port = 0;
+
     for (auto it = m_proxies.begin(); it != m_proxies.end(); ) {
         if (auto proxy = it->lock()) {
             if (proxy->getHost() == host && proxy->getPort() == port) {
@@ -128,7 +147,7 @@ std::map<std::string, uint32_t> ProxyManager::getProxies()
     std::map<std::string, uint32_t> ret;
     for (auto& proxy_weak : m_proxies) {
         if (auto proxy = proxy_weak.lock()) {
-            ret[proxy->getHost() + ":" + std::to_string(proxy->getPort())] = proxy->getRealPing();
+            ret[proxyKey(proxy)] = proxy->getRealPing();
         }
     }
     return ret;
@@ -139,7 +158,7 @@ std::map<std::string, std::string> ProxyManager::getProxiesDebugInfo()
     std::map<std::string, std::string> ret;
     for (auto& proxy_weak : m_proxies) {
         if (auto proxy = proxy_weak.lock()) {
-            ret[proxy->getHost() + ":" + std::to_string(proxy->getPort())] = proxy->getDebugInfo();
+            ret[proxyKey(proxy)] = proxy->getDebugInfo();
         }
     }
     return ret;
