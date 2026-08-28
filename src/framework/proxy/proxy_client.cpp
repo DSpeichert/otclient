@@ -496,8 +496,10 @@ void Proxy::send(const ProxyPacketPtr& packet)
     const bool sendNow = m_sendQueue.empty();
     m_sendQueue.push_back(packet);
     if (sendNow) {
+        // the handler keeps the packet alive: disconnect() resets the queue
+        // while a write may still be in flight
         async_write(m_socket, asio::buffer(packet->data(), packet->size()),
-                    [capture0 = shared_from_this(), gen = m_generation](auto&& PH1, auto&& PH2) {
+                    [capture0 = shared_from_this(), gen = m_generation, packet](auto&& PH1, auto&& PH2) {
             if (gen != capture0->m_generation)
                 return;
             capture0->onSent(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2));
@@ -519,8 +521,9 @@ void Proxy::onSent(const std::error_code& ec, const std::size_t bytes_transferre
         return; // queue was reset by a reconnect while this write completed
     m_sendQueue.pop_front();
     if (!m_sendQueue.empty()) {
-        async_write(m_socket, asio::buffer(m_sendQueue.front()->data(), m_sendQueue.front()->size()),
-                    [capture0 = shared_from_this(), gen = m_generation](auto&& PH1, auto&& PH2) {
+        const auto packet = m_sendQueue.front();
+        async_write(m_socket, asio::buffer(packet->data(), packet->size()),
+                    [capture0 = shared_from_this(), gen = m_generation, packet](auto&& PH1, auto&& PH2) {
             if (gen != capture0->m_generation)
                 return;
             capture0->onSent(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2));
