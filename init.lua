@@ -21,6 +21,13 @@ Services = {
         archiveExtraPrefixes = { "bin" },
         installPackagedFiles = true
     }, -- ./client_assets
+    --otshosting = { -- ./otshosting: OTShield proxy discovery for servers hosted on otshosting.pl
+    --    subdomain = "myserver", -- activates the module; the `myserver` part of myserver.ots.ovh
+    --    refreshInterval = 300, -- seconds between proxy list refreshes (the API caches for up to 60s)
+    --    hideServerFields = true, -- hide the server address/port fields on the login screen
+    --    host = "proxy", port = 7171, -- optional: prefill the (hidden) server fields
+    --    url = "https://otshosting.pl/api/proxy/", -- discovery endpoint override, mainly for testing
+    --},
 }
 
 --- Enables or disables the entire server configuration block.

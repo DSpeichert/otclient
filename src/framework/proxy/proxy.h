@@ -29,6 +29,25 @@ class Session;
 using ProxyPacket = std::vector<uint8_t>;
 using ProxyPacketPtr = std::shared_ptr<ProxyPacket>;
 
+// structured snapshot of one registered proxy, exposed to Lua for diagnostics UIs
+struct ProxyStatus
+{
+    std::string host; // hostname, or the full url for WebSocket proxies
+    uint16_t port;    // 0 for WebSocket proxies
+    bool webSocket;
+    bool connected;
+    uint32_t ping;     // measured ping + priority (ranking value), ms
+    uint32_t realPing; // measured ping, ms
+    int priority;
+    int sessions;
+    int connections;
+    int packetsSent;
+    int packetsReceived;
+    int bytesSent;
+    int bytesReceived;
+    std::string resolvedIp;
+};
+
 class ProxyManager
 {
 public:
@@ -52,6 +71,7 @@ public:
     void send(uint32_t sessionId, ProxyPacketPtr packet);
     // tools
     std::map<std::string, uint32_t> getProxies();
+    std::vector<ProxyStatus> getProxiesStatus();
     std::map<std::string, std::string> getProxiesDebugInfo();
     int getPing();
 

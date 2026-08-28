@@ -21,6 +21,7 @@
  */
 
 #include "luainterface.h"
+#include <framework/proxy/proxy.h>
 #include <framework/otml/otmlnode.h>
 
  // bool
@@ -301,6 +302,40 @@ void push_otml_subnode_luavalue(const OTMLNodePtr& node)
         }
     } else
         g_lua.pushNil();
+}
+
+int push_luavalue(const ProxyStatus& status)
+{
+    g_lua.createTable(0, 14);
+    push_luavalue(status.host);
+    g_lua.setField("host");
+    push_luavalue(status.port);
+    g_lua.setField("port");
+    push_luavalue(status.webSocket);
+    g_lua.setField("webSocket");
+    push_luavalue(status.connected);
+    g_lua.setField("connected");
+    push_luavalue(status.ping);
+    g_lua.setField("ping");
+    push_luavalue(status.realPing);
+    g_lua.setField("realPing");
+    push_luavalue(status.priority);
+    g_lua.setField("priority");
+    push_luavalue(status.sessions);
+    g_lua.setField("sessions");
+    push_luavalue(status.connections);
+    g_lua.setField("connections");
+    push_luavalue(status.packetsSent);
+    g_lua.setField("packetsSent");
+    push_luavalue(status.packetsReceived);
+    g_lua.setField("packetsReceived");
+    push_luavalue(status.bytesSent);
+    g_lua.setField("bytesSent");
+    push_luavalue(status.bytesReceived);
+    g_lua.setField("bytesReceived");
+    push_luavalue(status.resolvedIp);
+    g_lua.setField("resolvedIp");
+    return 1;
 }
 
 int push_luavalue(const OTMLNodePtr& node)

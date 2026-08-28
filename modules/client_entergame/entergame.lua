@@ -885,6 +885,34 @@ function EnterGame.setDefaultServer(host, port, protocol)
     end
 end
 
+-- hides only the server address/port row (used by ./otshosting when a proxy
+-- makes the server address irrelevant); optionally prefills the hidden fields
+function EnterGame.hideServerFields(host, port)
+    if host and host ~= '' then
+        enterGame:getChildById('serverHostTextEdit'):setText(host)
+        g_settings.set('host', host)
+    end
+    if port then
+        enterGame:getChildById('serverPortTextEdit'):setText(tostring(port))
+        g_settings.set('port', port)
+    end
+
+    for _, id in ipairs({ 'serverLabel', 'serverHostTextEdit', 'portLabel', 'serverPortTextEdit' }) do
+        local widget = enterGame:getChildById(id)
+        widget:setVisible(false)
+        widget:setHeight(0)
+    end
+
+    local serverListButton = enterGame:getChildById('serverListButton')
+    serverListButton:setVisible(false)
+    serverListButton:setHeight(0)
+    serverListButton:setWidth(0)
+
+    -- autoLoginBox is anchored below the (now collapsed) port row; hang it
+    -- under the client version combobox instead so the layout stays intact
+    enterGame:getChildById('autoLoginBox'):addAnchor(AnchorTop, 'clientComboBox', AnchorBottom)
+end
+
 function EnterGame.setUniqueServer(host, port, protocol, windowWidth, windowHeight)
     local hostTextEdit = enterGame:getChildById('serverHostTextEdit')
     hostTextEdit:setText(host)

@@ -23,6 +23,10 @@
 #pragma once
 #include <framework/global.h>
 
+#ifndef __EMSCRIPTEN__
+#include <ixwebsocket/IXWebSocket.h>
+#endif
+
 using ProxyPacket = std::vector<uint8_t>;
 using ProxyPacketPtr = std::shared_ptr<ProxyPacket>;
 
@@ -41,14 +45,29 @@ class Proxy : public std::enable_shared_from_this<Proxy>
         STATE_CONNECTED
     };
 public:
+    // proxy reached over a plain TCP socket
     Proxy(asio::io_context& io, const std::string& host, const uint16_t port, const int priority)
         : m_io(io), m_timer(io), m_socket(io), m_resolver(io)
-
     {
         m_host = host;
         m_port = port;
         m_priority = priority;
     }
+
+    // proxy reached over a WebSocket (ws:// or wss:// url). The proxy session
+    // protocol is carried unchanged inside binary WebSocket messages, so the
+    // server side only needs to unwrap WebSocket -> TCP (websockify, nginx, ...)
+    // in front of a regular proxy server.
+    Proxy(asio::io_context& io, const std::string& url, const int priority)
+        : m_io(io), m_timer(io), m_socket(io), m_resolver(io)
+    {
+        m_host = url;
+        m_port = 0;
+        m_priority = priority;
+        m_webSocket = true;
+    }
+
+    static bool isWebSocketUrl(const std::string& host);
 
     // thread-safe
     void start();
@@ -58,10 +77,18 @@ public:
     uint32_t getRealPing() { return m_ping; }
     uint32_t getPriority() { return m_priority; }
     bool isConnected() { return m_state == STATE_CONNECTED; }
-    std::string getHost() { return m_host; }
-    uint16_t getPort() { return m_port; }
+    bool isWebSocket() const { return m_webSocket; }
+    std::string getHost() { return m_host; } // full url for WebSocket proxies
+    uint16_t getPort() { return m_port; } // always 0 for WebSocket proxies
     std::string getDebugInfo();
     bool isActive() { return m_sessions > 0; }
+    int getSessionsCount() { return m_sessions; }
+    int getConnectionsCount() { return m_connections; }
+    int getPacketsSent() { return m_packetsSent; }
+    int getPacketsReceived() { return m_packetsRecived; }
+    int getBytesSent() { return m_bytesSent; }
+    int getBytesReceived() { return m_bytesRecived; }
+    std::string getResolvedIp() { return m_resolvedIp; }
 
     // not thread-safe
     void addSession(uint32_t id, int m_port);
@@ -72,20 +99,42 @@ public:
 private:
     void check(const std::error_code& ec);
     void connect();
+    void connectSocket();
+    void connectWebSocket();
     void disconnect();
 
     void ping();
     void onPing(uint32_t packetId);
 
+    // plain socket transport
     void readHeader();
     void onHeader(const std::error_code& ec, std::size_t bytes_transferred);
     void onPacket(const std::error_code& ec, std::size_t bytes_transferred);
     void onSent(const std::error_code& ec, std::size_t bytes_transferred);
 
+    // WebSocket transport (runs on m_io, fed by the ixwebsocket thread)
+#ifndef __EMSCRIPTEN__
+    void onWebSocketEvent(uint32_t generation, ix::WebSocketMessageType type, const std::string& payload, const std::string& reason);
+    bool onWebSocketData(const std::string& data);
+#endif
+
+    // handles a complete proxy packet stored in m_buffer, returns false when the proxy got disconnected
+    bool handlePacket(std::size_t size);
+
     asio::io_context& m_io;
     asio::steady_timer m_timer;
     asio::ip::tcp::socket m_socket;
     asio::ip::tcp::resolver m_resolver;
+
+#ifndef __EMSCRIPTEN__
+    std::shared_ptr<ix::WebSocket> m_ws;
+    std::string m_wsRecvBuffer;
+#endif
+    // bumped on every connect/disconnect; async handlers capture it and ignore
+    // completions that belong to a previous connection, otherwise a dying
+    // read handler can tear down the next connection attempt over and over
+    uint32_t m_generation = 0;
+    bool m_webSocket = false;
 
     ProxyState m_state{ STATE_NOT_CONNECTED };
 

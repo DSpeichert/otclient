@@ -202,6 +202,10 @@ bool luavalue_cast(int index, Size& size);
 int push_luavalue(const Device& device);
 bool luavalue_cast(int index, Device& device);
 
+// proxy status
+struct ProxyStatus;
+int push_luavalue(const ProxyStatus& status);
+
 // otml nodes
 int push_luavalue(const OTMLNodePtr& node);
 bool luavalue_cast(int index, OTMLNodePtr& node);
