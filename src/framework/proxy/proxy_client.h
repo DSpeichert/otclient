@@ -152,8 +152,11 @@ private:
     std::string m_wsHostHeader;
     std::string m_wsTarget;
     std::string m_wsRecvBuffer;
-    uint32_t m_wsGeneration = 0;
 #endif
+    // bumped on every connect/disconnect; async handlers capture it and ignore
+    // completions that belong to a previous connection, otherwise a dying
+    // read handler can tear down the next connection attempt over and over
+    uint32_t m_generation = 0;
     bool m_webSocket = false;
 
     ProxyState m_state;
