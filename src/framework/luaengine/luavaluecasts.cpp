@@ -22,6 +22,7 @@
 
 #include "luavaluecasts.h"
 #include "luainterface.h"
+#include <framework/proxy/proxy.h>
 #include <framework/otml/otmlnode.h>
 
 // bool
@@ -127,6 +128,41 @@ bool luavalue_cast(int index, Color& color)
         return true;
     }
     return false;
+}
+
+// proxy status
+int push_luavalue(const ProxyStatus& status)
+{
+    g_lua.createTable(0, 14);
+    g_lua.pushString(status.host);
+    g_lua.setField("host");
+    g_lua.pushInteger(status.port);
+    g_lua.setField("port");
+    g_lua.pushBoolean(status.webSocket);
+    g_lua.setField("webSocket");
+    g_lua.pushBoolean(status.connected);
+    g_lua.setField("connected");
+    g_lua.pushInteger(status.ping);
+    g_lua.setField("ping");
+    g_lua.pushInteger(status.realPing);
+    g_lua.setField("realPing");
+    g_lua.pushInteger(status.priority);
+    g_lua.setField("priority");
+    g_lua.pushInteger(status.sessions);
+    g_lua.setField("sessions");
+    g_lua.pushInteger(status.connections);
+    g_lua.setField("connections");
+    g_lua.pushInteger(status.packetsSent);
+    g_lua.setField("packetsSent");
+    g_lua.pushInteger(status.packetsReceived);
+    g_lua.setField("packetsReceived");
+    g_lua.pushInteger(status.bytesSent);
+    g_lua.setField("bytesSent");
+    g_lua.pushInteger(status.bytesReceived);
+    g_lua.setField("bytesReceived");
+    g_lua.pushString(status.resolvedIp);
+    g_lua.setField("resolvedIp");
+    return 1;
 }
 
 // rect

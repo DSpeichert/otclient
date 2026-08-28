@@ -1,0 +1,10 @@
+Module
+  name: otshosting
+  description: OTShield proxy discovery, rotation and diagnostics for servers hosted on otshosting.pl
+  author: OTClient team
+  website: https://github.com/OTCv8/otcv8-dev
+  sandboxed: true
+  scripts: [ otshosting ]
+  dependencies: [ client_topmenu, client_entergame ]
+  @onLoad: OTSHosting.init()
+  @onUnload: OTSHosting.terminate()

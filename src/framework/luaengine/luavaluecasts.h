@@ -85,6 +85,10 @@ bool luavalue_cast(int index, Color& color);
 int push_luavalue(const Rect& rect);
 bool luavalue_cast(int index, Rect& rect);
 
+// proxy status
+struct ProxyStatus;
+int push_luavalue(const ProxyStatus& status);
+
 // point
 int push_luavalue(const Point& point);
 bool luavalue_cast(int index, Point& point);

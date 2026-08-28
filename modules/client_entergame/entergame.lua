@@ -64,10 +64,44 @@ local function onUpdateNeeded(protocol, signature)
   return EnterGame.onError(tr('Your client needs updating, try redownloading it.'))
 end
 
-local function onProxyList(protocol, proxies)
-  for _, proxy in ipairs(proxies) do
-    g_proxy.addProxy(proxy["host"], proxy["port"], proxy["priority"])
+-- proxies announced by the login server (login protocol proxy list, "proxies"
+-- of the http login response or playdata.proxies of the Tibia 12 one), they
+-- are replaced on every login and never touch proxies configured statically
+-- (e.g. g_proxy.addProxy(...) in init.lua)
+local loginProxies = {}
+
+local function clearLoginProxies()
+  if not g_proxy then
+    return
   end
+  for _, proxy in ipairs(loginProxies) do
+    g_proxy.removeProxy(proxy.host, proxy.port)
+  end
+  loginProxies = {}
+end
+
+local function applyLoginProxies(proxies)
+  clearLoginProxies()
+  if not g_proxy or type(proxies) ~= 'table' then
+    return
+  end
+
+  for _, proxy in ipairs(proxies) do
+    if type(proxy) == 'table' and type(proxy.host) == 'string' and proxy.host ~= '' then
+      local port = tonumber(proxy.port) or 0
+      local priority = tonumber(proxy.priority) or 0
+      g_proxy.addProxy(proxy.host, port, priority)
+      table.insert(loginProxies, { host = proxy.host, port = port })
+    end
+  end
+
+  if #loginProxies > 0 then
+    g_logger.info(string.format('[EnterGame] %d proxy server(s) received from the login server', #loginProxies))
+  end
+end
+
+local function onProxyList(protocol, proxies)
+  applyLoginProxies(proxies)
 end
 
 local function parseFeatures(features)
@@ -180,15 +214,8 @@ local function onTibia12HTTPResult(session, playdata)
     end
   end
   
-  -- proxies
-  if g_proxy then
-    g_proxy.clear()
-    if playdata["proxies"] then
-      for i, proxy in ipairs(playdata["proxies"]) do
-        g_proxy.addProxy(proxy["host"], tonumber(proxy["port"]), tonumber(proxy["priority"]))
-      end
-    end
-  end
+  -- proxies, the world address must be "proxy" (or 0.0.0.0) for the client to actually use them
+  applyLoginProxies(playdata["proxies"])
   
   g_game.setCustomProtocolVersion(0)
   g_game.chooseRsa(G.host)
@@ -279,15 +306,8 @@ local function onHTTPResult(data, err)
     onSessionKey(nil, session)
   end
   
-  -- proxies
-  if g_proxy then
-    g_proxy.clear()
-    if proxies then
-      for i, proxy in ipairs(proxies) do
-        g_proxy.addProxy(proxy["host"], tonumber(proxy["port"]), tonumber(proxy["priority"]))
-      end
-    end
-  end
+  -- proxies, the world address must be "proxy" (or 0.0.0.0) for the client to actually use them
+  applyLoginProxies(proxies)
   
   onCharacterList(nil, characters, account, nil)  
 end
@@ -399,6 +419,35 @@ function EnterGame.clearAccountFields()
   enterGame:getChildById('accountNameTextEdit'):focus()
   g_settings.remove('account')
   g_settings.remove('password')
+end
+
+-- hides the server selection (used by ./otshosting when a proxy makes the
+-- server address irrelevant); optionally prefills the hidden server field with
+-- host:port[:version], the format EnterGame.doLogin expects
+function EnterGame.hideServerFields(host, port, version)
+  if not enterGame then return end
+
+  if host and host ~= '' then
+    local server = host
+    if port then
+      server = server .. ':' .. tostring(port)
+    end
+    if version then
+      server = server .. ':' .. tostring(version)
+      clientVersionSelector:setOption(tonumber(version))
+    end
+    serverHostTextEdit:setText(server)
+    g_settings.set('host', server)
+  end
+
+  if serverSelectorPanel:isOn() then
+    enterGame:setHeight(enterGame:getHeight() - serverSelectorPanel:getHeight())
+    serverSelectorPanel:setOn(false)
+  end
+  if customServerSelectorPanel:isOn() then
+    enterGame:setHeight(enterGame:getHeight() - customServerSelectorPanel:getHeight())
+    customServerSelectorPanel:setOn(false)
+  end
 end
 
 function EnterGame.onServerChange()
@@ -531,10 +580,8 @@ function EnterGame.doLogin(account, password, token, host)
     g_game.enableFeature(tonumber(server_params[i]))
   end
   
-  -- proxies
-  if g_proxy then
-    g_proxy.clear()
-  end
+  -- proxies belong to the server that announced them
+  clearLoginProxies()
   
   if modules.game_things.isLoaded() then
     g_logger.info("Connecting to: " .. server_ip .. ":" .. server_port)
