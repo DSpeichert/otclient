@@ -7,6 +7,9 @@
       content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no"
     />
     <title>Loading</title>
+    <!-- hosted deployments inject a <script> defining window.OTW right after
+         the <head> tag (comments here do not survive emscripten's shell
+         minification, so the injection targets the tag itself) -->
     <style>
       body {
         margin: 0;
@@ -99,8 +102,38 @@
           title.innerHTML = "Runtime error – check console";
         }
       }
+      // hosted deployments (client.ots.ovh) bind the page to one server: the
+      // web server replaces the OTW_CONFIG comment above with a script setting
+      // window.OTW = { assetBase: "/v/<build>", subdomain: "<name>" }; the
+      // pathname fallback keeps direct /s/<name> links working when the page
+      // is served without that injection (e.g. the local dev server)
+      function getServerSubdomain() {
+        var sub =
+          (window.OTW && OTW.subdomain) ||
+          (location.pathname.match(/^\/s\/([^\/]+)\/?$/) || [])[1];
+        if (sub && /^[a-z0-9][a-z0-9-]{0,62}$/.test(sub)) {
+          return sub;
+        }
+        return null;
+      }
       function startGame() {
         document.getElementById("start").style.display = "none";
+        // written (or removed) on every load, before main() runs: init.lua
+        // picks it up through the /user/.otclient write dir as /webclient.lua
+        try {
+          var subdomain = getServerSubdomain();
+          if (subdomain) {
+            FS.mkdirTree("/user/.otclient");
+            FS.writeFile(
+              "/user/.otclient/webclient.lua",
+              'return { subdomain = "' + subdomain + '" }'
+            );
+          } else {
+            FS.unlink("/user/.otclient/webclient.lua");
+          }
+        } catch (e) {
+          /* missing file on unlink, or an unwritable FS: not fatal */
+        }
         callMain();
         document.addEventListener("touchstart", function (ev) {
           ev.preventDefault();
@@ -139,6 +172,9 @@
       }
       var Module = {
         locateFile: function (path) {
+          if (window.OTW && OTW.assetBase) {
+            return OTW.assetBase + "/" + path;
+          }
           const baseURL =
             window.location.origin +
             window.location.pathname.substring(

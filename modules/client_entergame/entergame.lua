@@ -779,6 +779,14 @@ function EnterGame.loginFailed(requestId, msg, result)
 end
 
 function EnterGame.doLogin()
+    if EnterGame.managedLockMessage then
+        -- a managed deployment (./otshosting web client) is still configuring
+        -- the server or fetching its assets; Enter must not slip past the
+        -- disabled login button
+        displayInfoBox(tr('Please wait'), EnterGame.managedLockMessage)
+        return
+    end
+
     G.account = enterGame:getChildById('accountNameTextEdit'):getText()
     G.password = enterGame:getChildById('accountPasswordTextEdit'):getText()
     G.stayLogged = enterGame:getChildById('stayLoggedBox'):isChecked()
@@ -911,6 +919,40 @@ function EnterGame.hideServerFields(host, port)
     -- autoLoginBox is anchored below the (now collapsed) port row; hang it
     -- under the client version combobox instead so the layout stays intact
     enterGame:getChildById('autoLoginBox'):addAnchor(AnchorTop, 'clientComboBox', AnchorBottom)
+end
+
+-- fully locks the login window to one server (used by ./otshosting in the
+-- hosted web client): pins host/port/client version, hides their fields and
+-- persists the values so a page reload starts from the same state.
+-- cfg = { host, port, clientVersion, httpLogin }
+function EnterGame.applyManagedServer(cfg)
+    if not enterGame then
+        return
+    end
+
+    g_settings.set('host', cfg.host)
+    g_settings.set('port', cfg.port)
+    if cfg.clientVersion then
+        g_settings.set('client-version', cfg.clientVersion)
+    end
+
+    EnterGame.setUniqueServer(cfg.host, cfg.port, cfg.clientVersion)
+    EnterGame.setHttpLogin(cfg.httpLogin == true)
+end
+
+-- blocks the login action with an explanation while a managed deployment is
+-- still configuring the server or downloading its assets; pass nil to unlock
+function EnterGame.setManagedLock(message)
+    EnterGame.managedLockMessage = message
+
+    if not enterGame then
+        return
+    end
+    local button = enterGame:getChildById('loginButton')
+    if button then
+        button:setEnabled(message == nil)
+        button:setTooltip(message or '')
+    end
 end
 
 function EnterGame.setUniqueServer(host, port, protocol, windowWidth, windowHeight)

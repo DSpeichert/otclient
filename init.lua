@@ -21,13 +21,13 @@ Services = {
         archiveExtraPrefixes = { "bin" },
         installPackagedFiles = true
     }, -- ./client_assets
-    --otshosting = { -- ./otshosting: OTShield proxy discovery for servers hosted on otshosting.pl
-    --    subdomain = "myserver", -- activates the module; the `myserver` part of myserver.ots.ovh
-    --    refreshInterval = 300, -- seconds between proxy list refreshes (the API caches for up to 60s)
-    --    hideServerFields = true, -- hide the server address/port fields on the login screen
-    --    host = "proxy", port = 7171, -- optional: prefill the (hidden) server fields
-    --    url = "https://otshosting.pl/api/proxy/", -- discovery endpoint override, mainly for testing
-    --},
+    otshosting = { -- ./otshosting: OTShield proxy discovery for servers hosted on otshosting.pl
+        subdomain = "", -- activates the module when non-empty; the `myserver` part of myserver.ots.ovh
+        --refreshInterval = 300, -- seconds between proxy list refreshes (the API caches for up to 60s)
+        --hideServerFields = true, -- hide the server address/port fields on the login screen
+        --host = "proxy", port = 7171, -- optional: prefill the (hidden) server fields
+        --url = "https://otshosting.pl/api/proxy/", -- discovery endpoint override, mainly for testing
+    },
 }
 
 --- Enables or disables the entire server configuration block.
@@ -153,6 +153,25 @@ g_resources.searchAndAddPackages('/', '.otpkg', true)
 
 -- load settings
 g_configs.loadSettings('/config.otml')
+
+-- hosted web client: browser/shell.html writes /user/.otclient/webclient.lua
+-- (visible here as /webclient.lua through the write-dir mount) before starting
+-- the runtime; it selects the otshosting.pl server this page is bound to
+if g_platform.isBrowser() and g_resources.fileExists('/webclient.lua') then
+    local ok, web = pcall(function()
+        return assert(loadstring(g_resources.readFileContents('/webclient.lua')))()
+    end)
+    if ok and type(web) == 'table' and type(web.subdomain) == 'string' and web.subdomain ~= '' then
+        Services.otshosting = {
+            subdomain = web.subdomain,
+            hideServerFields = true,
+            web = true,
+        }
+        Servers_init = {}
+    else
+        g_logger.warning('/webclient.lua is present but invalid, ignoring it')
+    end
+end
 
 g_modules.discoverModules()
 
