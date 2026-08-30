@@ -1,0 +1,89 @@
+name: Deploy Web Client
+
+# Builds the browser (WASM) bundle and publishes it to the R2 bucket that
+# backs https://client.ots.ovh (see infra/webclient-worker in the otshosting
+# repo). Uploading alone is inert; the `promote` input flips the live pointer
+# webclient/current.json to the uploaded build. Rollback = re-run with
+# promote=true and an older build id.
+
+on:
+  workflow_dispatch:
+    inputs:
+      promote:
+        description: Point client.ots.ovh at this build after uploading
+        type: boolean
+        default: false
+      build:
+        description: Existing build id (git sha) to promote instead of building
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    if: ${{ inputs.build == '' }}
+    uses: ./.github/workflows/reusable-build-browser.yml
+
+  upload:
+    name: Upload to R2
+    if: ${{ inputs.build == '' }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download browser artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: otclient-browser-${{ github.sha }}
+
+      - name: Setup Rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: |
+            [r2]
+            type = s3
+            provider = Cloudflare
+            access_key_id = ${{ secrets.R2_S3_ACCESS_KEY }}
+            secret_access_key = ${{ secrets.R2_S3_SECRET_KEY }}
+            region = auto
+            endpoint = https://7790c004a881eb63eaf2691bd90d0cf0.eu.r2.cloudflarestorage.com
+            acl = private
+          disable_base64: true
+
+      - name: Upload bundle
+        run: |
+          test -f build-emscripten-web/otclient.html
+          test -f build-emscripten-web/otclient.wasm
+          rclone copy build-emscripten-web/ "r2:ots/webclient/builds/${{ github.sha }}/"
+
+  promote:
+    name: Promote
+    # runs after upload for fresh builds, or standalone when only an existing
+    # build id is being (re-)promoted
+    if: ${{ !cancelled() && inputs.promote && (needs.upload.result == 'success' || inputs.build != '') }}
+    needs: [upload]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Rclone
+        uses: AnimMouse/setup-rclone@v1
+        with:
+          rclone_config: |
+            [r2]
+            type = s3
+            provider = Cloudflare
+            access_key_id = ${{ secrets.R2_S3_ACCESS_KEY }}
+            secret_access_key = ${{ secrets.R2_S3_SECRET_KEY }}
+            region = auto
+            endpoint = https://7790c004a881eb63eaf2691bd90d0cf0.eu.r2.cloudflarestorage.com
+            acl = private
+          disable_base64: true
+
+      - name: Update live pointer
+        run: |
+          BUILD="${{ inputs.build != '' && inputs.build || github.sha }}"
+          # refuse to promote a build that was never uploaded
+          rclone lsf "r2:ots/webclient/builds/${BUILD}/otclient.html" | grep -q otclient.html
+          printf '{"build":"%s"}' "$BUILD" | rclone rcat r2:ots/webclient/current.json
+          echo "client.ots.ovh now serves build $BUILD"
