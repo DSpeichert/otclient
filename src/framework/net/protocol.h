@@ -46,6 +46,9 @@ public:
 #endif
     void disconnect();
 
+    // hosts that route through the proxy pool instead of a direct connection
+    static bool isProxyRoutedHost(std::string_view host);
+
     void setRecorder(PacketRecorderPtr recorder);
     void playRecord(PacketPlayerPtr player);
 
@@ -94,6 +97,7 @@ protected:
     PacketPlayerPtr m_player;
     PacketRecorderPtr m_recorder;
 private:
+    void processProxyPacket(const std::shared_ptr<std::vector<uint8_t>>& packet);
     void internalRecvHeader(const uint8_t* buffer, uint16_t size);
     void internalRecvData(const uint8_t* buffer, uint16_t size);
 

@@ -23,6 +23,10 @@
 #pragma once
 #include <framework/global.h>
 
+#ifdef __EMSCRIPTEN__
+#include <framework/core/declarations.h>
+#endif
+
 class Proxy;
 class Session;
 
@@ -80,7 +84,12 @@ private:
     asio::executor_work_guard<asio::io_context::executor_type> m_guard;
 
     bool m_working = false;
+#ifdef __EMSCRIPTEN__
+    // the io_context is pumped from the dispatcher thread, see ProxyManager::init()
+    ScheduledEventPtr m_pollEvent;
+#else
     std::thread m_thread;
+#endif
 
     int m_maxActiveProxies = 2;
 

@@ -36,7 +36,10 @@ void ProtocolGame::login(const std::string_view accountName, const std::string_v
 #ifndef __EMSCRIPTEN__
     connect(host, port);
 #else
-    if (port == 7172)
+    // direct browser connections ride wss on 443, but a proxy-routed session
+    // must keep the real server port: it is carried inside the proxy protocol
+    // and tells the remote end which local port to bridge to
+    if (port == 7172 && !isProxyRoutedHost(host))
         port = 443;
     connect(host, port, true);
 #endif

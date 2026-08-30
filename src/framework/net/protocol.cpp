@@ -50,10 +50,15 @@ Protocol::~Protocol()
     inflateEnd(&m_zstream);
 }
 
+bool Protocol::isProxyRoutedHost(const std::string_view host)
+{
+    return host == "proxy" || host == "0.0.0.0" || (host == "127.0.0.1" && g_proxy.isActive());
+}
+
 #ifndef __EMSCRIPTEN__
 void Protocol::connect(const std::string_view host, const uint16_t port)
 {
-    if (host == "proxy" || host == "0.0.0.0" || (host == "127.0.0.1" && g_proxy.isActive())) {
+    if (isProxyRoutedHost(host)) {
         m_disconnected = false;
         m_proxy = g_proxy.addSession(port,
                                      [capture0 = asProtocol()](auto&& PH1) {
@@ -83,6 +88,21 @@ void Protocol::connect(const std::string_view host, const uint16_t port)
 #else
 void Protocol::connect(const std::string_view host, uint16_t port, bool gameWorld)
 {
+    // same routing rule as the native build: with registered (WebSocket)
+    // proxies, both the login and the game connection tunnel through the
+    // proxy session protocol instead of opening a direct WebSocket
+    if (isProxyRoutedHost(host)) {
+        m_disconnected = false;
+        m_proxy = g_proxy.addSession(port,
+                                     [capture0 = asProtocol()](auto&& PH1) {
+            capture0->onProxyPacket(std::forward<decltype(PH1)>(PH1));
+        },
+                                     [capture0 = asProtocol()](auto&& PH1) {
+            capture0->onLocalDisconnected(std::forward<decltype(PH1)>(PH1));
+        });
+        return onConnect();
+    }
+
     m_connection = std::make_shared<WebConnection>();
     m_connection->setErrorCallback([capture0 = asProtocol()](auto&& PH1) { capture0->onError(std::forward<decltype(PH1)>(PH1));    });
     m_connection->connect(host, port, [capture0 = asProtocol()] { capture0->onConnect(); }, gameWorld);
@@ -429,30 +449,41 @@ void Protocol::onError(const std::error_code& err)
     disconnect();
 }
 
+void Protocol::processProxyPacket(const std::shared_ptr<std::vector<uint8_t>>& packet)
+{
+    if (m_disconnected)
+        return;
+    m_inputMessage->reset();
+
+    // first update message header size
+    int headerSize = 2; // 2 bytes for message size
+    if (m_checksumEnabled)
+        headerSize += 4; // 4 bytes for checksum
+    if (g_game.getClientVersion() >= 1405) {
+        headerSize += 1; // 1 bytes for padding size
+    } else if (m_xteaEncryptionEnabled) {
+        headerSize += 2; // 2 bytes for XTEA encrypted message size
+    }
+    m_inputMessage->setHeaderSize(headerSize);
+    m_inputMessage->fillBuffer(packet->data(), 2);
+    m_inputMessage->readSize();
+    internalRecvData(packet->data() + 2, packet->size() - 2);
+}
+
 void Protocol::onProxyPacket(const std::shared_ptr<std::vector<uint8_t>>& packet)
 {
     if (m_disconnected)
         return;
     auto self(asProtocol());
+#ifdef __EMSCRIPTEN__
+    // the proxy io context is pumped on the dispatcher thread (see
+    // ProxyManager::init), which is where protocol code runs anyway
+    processProxyPacket(packet);
+#else
     post(g_ioService, [&, packet] {
-        if (m_disconnected)
-            return;
-        m_inputMessage->reset();
-
-        // first update message header size
-        int headerSize = 2; // 2 bytes for message size
-        if (m_checksumEnabled)
-            headerSize += 4; // 4 bytes for checksum
-        if (g_game.getClientVersion() >= 1405) {
-            headerSize += 1; // 1 bytes for padding size
-        } else if (m_xteaEncryptionEnabled) {
-            headerSize += 2; // 2 bytes for XTEA encrypted message size
-        }
-        m_inputMessage->setHeaderSize(headerSize);
-        m_inputMessage->fillBuffer(packet->data(), 2);
-        m_inputMessage->readSize();
-        internalRecvData(packet->data() + 2, packet->size() - 2);
+        processProxyPacket(packet);
     });
+#endif
 }
 
 void Protocol::onLocalDisconnected(std::error_code ec)
@@ -460,7 +491,10 @@ void Protocol::onLocalDisconnected(std::error_code ec)
     if (m_disconnected)
         return;
     auto self(asProtocol());
-#ifndef __EMSCRIPTEN__
+#ifdef __EMSCRIPTEN__
+    m_disconnected = true;
+    onError(ec);
+#else
     post(g_ioService, [&, ec] {
         if (m_disconnected)
             return;

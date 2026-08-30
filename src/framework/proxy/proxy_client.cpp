@@ -30,6 +30,25 @@ std::map<uint32_t, std::weak_ptr<Session>> g_sessions;
 std::set<std::shared_ptr<Proxy>> g_proxies;
 uint32_t UID = (std::chrono::high_resolution_clock::now().time_since_epoch().count()) & 0xFFFFFFFF;
 
+#ifdef __EMSCRIPTEN__
+namespace {
+    // Emscripten hands websocket events a raw userData pointer with no lifetime
+    // guarantees, so events are routed through this registry instead: it maps
+    // the socket handle back to a live Proxy, and an event that arrives after
+    // disconnect() removed the entry is simply dropped. Everything runs on the
+    // dispatcher thread (see ProxyManager::init()), no locking needed.
+    std::map<EMSCRIPTEN_WEBSOCKET_T, std::weak_ptr<Proxy>> g_emWebSockets;
+
+    std::shared_ptr<Proxy> findEmProxy(const EMSCRIPTEN_WEBSOCKET_T socket)
+    {
+        const auto it = g_emWebSockets.find(socket);
+        if (it == g_emWebSockets.end())
+            return nullptr;
+        return it->second.lock();
+    }
+}
+#endif
+
 void Proxy::start()
 {
 #ifdef PROXY_DEBUG
@@ -237,8 +256,71 @@ void Proxy::connectWebSocket()
     m_ws = ws;
     ws->start();
 #else
-    g_logger.error("[Proxy {}] WebSocket proxies are not supported in this build", m_host);
-    m_state = STATE_NOT_CONNECTED;
+    m_wsRecvBuffer.clear();
+
+    // created on the dispatcher thread, which also pumps m_io: all callbacks
+    // below fire on this same thread between pumps, so they may touch proxy
+    // state directly. connect()/handshake timeouts are driven by check().
+    EmscriptenWebSocketCreateAttributes attributes = {
+        m_host.c_str(),
+        "binary",
+        EM_FALSE
+    };
+    m_emWs = emscripten_websocket_new(&attributes);
+    if (m_emWs <= 0) {
+#ifdef PROXY_DEBUG
+        g_logger.debug("[Proxy {}] emscripten_websocket_new failed: {}", m_host, m_emWs);
+#endif
+        m_emWs = 0;
+        m_state = STATE_NOT_CONNECTED;
+        return;
+    }
+    g_emWebSockets[m_emWs] = weak_from_this();
+
+    emscripten_websocket_set_onopen_callback(m_emWs, nullptr,
+                                             [](int, const EmscriptenWebSocketOpenEvent* event, void*) -> EM_BOOL {
+        if (const auto self = findEmProxy(event->socket)) {
+            self->m_wsRecvBuffer.clear();
+            self->m_state = STATE_CONNECTING_WAIT_FOR_PING;
+            self->ping();
+#ifdef PROXY_DEBUG
+            g_logger.debug("[Proxy {}] connected", self->m_host);
+#endif
+        }
+        return EM_TRUE;
+    });
+
+    emscripten_websocket_set_onmessage_callback(m_emWs, nullptr,
+                                                [](int, const EmscriptenWebSocketMessageEvent* event, void*) -> EM_BOOL {
+        if (event->isText || event->numBytes == 0)
+            return EM_TRUE; // the proxy protocol is carried in binary messages only
+        if (const auto self = findEmProxy(event->socket)) {
+            self->onWebSocketData(std::string_view(reinterpret_cast<const char*>(event->data), event->numBytes));
+        }
+        return EM_TRUE;
+    });
+
+    emscripten_websocket_set_onerror_callback(m_emWs, nullptr,
+                                              [](int, const EmscriptenWebSocketErrorEvent* event, void*) -> EM_BOOL {
+        if (const auto self = findEmProxy(event->socket)) {
+#ifdef PROXY_DEBUG
+            g_logger.debug("[Proxy {}] websocket error", self->m_host);
+#endif
+            self->disconnect();
+        }
+        return EM_TRUE;
+    });
+
+    emscripten_websocket_set_onclose_callback(m_emWs, nullptr,
+                                              [](int, const EmscriptenWebSocketCloseEvent* event, void*) -> EM_BOOL {
+        if (const auto self = findEmProxy(event->socket)) {
+#ifdef PROXY_DEBUG
+            g_logger.debug("[Proxy {}] websocket closed", self->m_host);
+#endif
+            self->disconnect();
+        }
+        return EM_TRUE;
+    });
 #endif
 }
 
@@ -271,11 +353,12 @@ void Proxy::onWebSocketEvent(const uint32_t generation, const ix::WebSocketMessa
             break;
     }
 }
+#endif
 
 // WebSocket messages are not guaranteed to map 1:1 to proxy packets (a relay
 // may coalesce or split them), so the stream is reassembled using the 2 byte
 // size prefix of every proxy packet, the same framing the socket transport reads.
-bool Proxy::onWebSocketData(const std::string& data)
+bool Proxy::onWebSocketData(const std::string_view data)
 {
     m_wsRecvBuffer.append(data);
 
@@ -305,7 +388,6 @@ bool Proxy::onWebSocketData(const std::string& data)
     m_wsRecvBuffer.erase(0, offset);
     return true;
 }
-#endif
 
 void Proxy::disconnect()
 {
@@ -319,8 +401,17 @@ void Proxy::disconnect()
         const auto ws = std::move(m_ws);
         ws->stop();
     }
-    m_wsRecvBuffer.clear();
+#else
+    if (m_emWs > 0) {
+        // dropping the registry entry first makes any event still queued for
+        // this socket a no-op, then the socket itself is released
+        g_emWebSockets.erase(m_emWs);
+        emscripten_websocket_close(m_emWs, 1000, "");
+        emscripten_websocket_delete(m_emWs);
+        m_emWs = 0;
+    }
 #endif
+    m_wsRecvBuffer.clear();
     ++m_generation; // pending handlers of this connection must not touch the next one
     m_sendQueue.clear();
     m_state = STATE_NOT_CONNECTED;
@@ -482,6 +573,19 @@ void Proxy::send(const ProxyPacketPtr& packet)
         // connection is not open, which the socket transport reports via onSent
         const auto info = m_ws->sendBinary(std::string(packet->begin(), packet->end()));
         if (!info.success) {
+#ifdef PROXY_DEBUG
+            g_logger.debug("[Proxy {}] websocket send error", m_host);
+#endif
+            return disconnect();
+        }
+        m_packetsSent += 1;
+        m_bytesSent += static_cast<int>(packet->size());
+#else
+        if (m_emWs <= 0)
+            return;
+        // the browser buffers writes internally; a failure means the socket is
+        // closed or closing, which the socket transport reports via onSent
+        if (emscripten_websocket_send_binary(m_emWs, packet->data(), packet->size()) != EMSCRIPTEN_RESULT_SUCCESS) {
 #ifdef PROXY_DEBUG
             g_logger.debug("[Proxy {}] websocket send error", m_host);
 #endif
