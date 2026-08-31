@@ -100,7 +100,9 @@ only by the hosted web client (see below) and native clients ignore it:
 ```
 
 `login.type` is `classic` (tunnelled `ProtocolLogin`, `host`/`port` land in the
-login screen) or `http` (`login.url` is an HTTP login endpoint).
+login screen) or `http` (`login.url` is an HTTP login endpoint). An optional
+`rsa` key (decimal modulus, digits only; exponent 65537) configures servers
+that use a non-standard RSA key — omitted, the standard OTServ key applies.
 `wsProxies` always lists the server's own wss entry points, even when the
 `proxies` list is empty. `assets` (classic servers only) lists the
 `data/things/<clientVersion>/` files the web client downloads and

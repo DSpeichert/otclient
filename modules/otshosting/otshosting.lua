@@ -259,6 +259,15 @@ local function applyWebConfig(web)
         EnterGame.applyManagedServer(cfg)
     end
 
+    -- servers with a non-standard RSA key advertise its decimal modulus;
+    -- g_game.chooseRsa leaves custom keys alone, so this survives doLogin.
+    -- When the key disappears from the config, fall back to the standard one.
+    if type(web.rsa) == 'string' and web.rsa:match('^%d+$') then
+        g_game.setRsa(web.rsa)
+    elseif g_game.getRsa() ~= OTSERV_RSA and g_game.getRsa() ~= CIPSOFT_RSA then
+        g_game.setRsa(OTSERV_RSA)
+    end
+
     ensureClassicAssets(web)
 end
 
