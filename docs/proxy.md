@@ -75,6 +75,40 @@ login and game traffic) or a full `wss://` url (WebSocket proxy). The same
 hostname may appear multiple times with different ports; each entry is an
 independent candidate. An empty array means the proxy service is disabled.
 
+The response may also carry a `web` object next to `proxies` — it is consumed
+only by the hosted web client (see below) and native clients ignore it:
+
+```json
+{
+  "proxies": [ ... ],
+  "web": {
+    "name": "My Server",
+    "clientVersion": 860,
+    "login": { "type": "classic", "host": "proxy", "port": 7171 },
+    "wsProxies": [
+      { "host": "wss://myserver.ots.ovh:8443/session",  "priority": 0 },
+      { "host": "wss://myserver.ots.ovh:8443/session2", "priority": 0 }
+    ],
+    "assets": {
+      "things": [
+        { "file": "Tibia.dat", "url": "https://client.ots.ovh/assets/myserver/<sha8>/Tibia.dat", "sha256": "<64 hex>", "size": 123 },
+        { "file": "Tibia.spr", "url": "...", "sha256": "...", "size": 456 }
+      ]
+    }
+  }
+}
+```
+
+`login.type` is `classic` (tunnelled `ProtocolLogin`, `host`/`port` land in the
+login screen) or `http` (`login.url` is an HTTP login endpoint). An optional
+`rsa` key (decimal modulus, digits only; exponent 65537) configures servers
+that use a non-standard RSA key — omitted, the standard OTServ key applies.
+`wsProxies` always lists the server's own wss entry points, even when the
+`proxies` list is empty. `assets` (classic servers only) lists the
+`data/things/<clientVersion>/` files the web client downloads and
+sha256-verifies before the first login; `null` for modern servers, which use
+`modules/client_assets` instead.
+
 The `otshosting` module consumes this endpoint. It is activated by registering
 the server's subdomain in `init.lua`:
 
@@ -122,11 +156,12 @@ proxy server.
 
 ### WebSocket (`ws://` / `wss://`)
 
-`host` is a WebSocket url. The client opens it with ixwebsocket and carries
-**exactly the same proxy protocol** inside binary WebSocket messages: every
-outgoing proxy packet (2 byte size prefix included) is sent as one binary
-message, and incoming messages are reassembled into proxy packets using the
-size prefix, so relays are free to split or coalesce messages.
+`host` is a WebSocket url. The client opens it (ixwebsocket on native builds,
+the browser's own WebSocket via the emscripten API in the WASM build) and
+carries **exactly the same proxy protocol** inside binary WebSocket messages:
+every outgoing proxy packet (2 byte size prefix included) is sent as one
+binary message, and incoming messages are reassembled into proxy packets using
+the size prefix, so relays are free to split or coalesce messages.
 
 The server side therefore only needs a WebSocket → TCP unwrapper (websockify,
 nginx `stream`, Cloudflare + websockify, …) in front of an ordinary proxy
@@ -136,6 +171,32 @@ traffic, or fronting it with a CDN that understands WebSockets.
 
 `wss://` certificates are validated against the system CA store (ixwebsocket
 default); there is no option to skip validation.
+
+## Browser (WASM) build
+
+The emscripten build supports **only WebSocket proxies**: TCP entries are
+rejected by `g_proxy.addProxy` with a warning (a browser cannot open raw TCP
+sockets), and the `otshosting` module skips them silently in web mode. The
+proxy engine itself is unchanged — sessions, ranking, resend and the wire
+protocol are identical — but the io context is pumped from the dispatcher
+thread instead of a dedicated thread (`ProxyManager::init`), because
+emscripten delivers WebSocket events on the thread that created the socket.
+
+`Protocol::connect` applies the same routing rule as on native builds, so with
+registered proxies both the classic login (port 7171) and the game connection
+(port 7172) tunnel through wss — no CORS and no direct WebSocket endpoint on
+the game server needed. The 7172 → 443 port rewrite used for direct browser
+connections is skipped for proxy-routed hosts: the real port is carried inside
+the proxy protocol's open-session packet.
+
+The **hosted web client** (https://client.ots.ovh/s/&lt;subdomain&gt;, servers
+hosted on otshosting.pl) builds on this: the page injects the subdomain via
+`window.OTW` (see `browser/shell.html`), `init.lua` activates the `otshosting`
+module in web mode, and the module locks the login screen to the server
+described by the discovery response's `web` object, downloads classic
+`.dat`/`.spr` assets into the IndexedDB-persisted write dir when needed, and
+registers only the `wsProxies`. `tools/emscripten-web-serve.py` mirrors the
+`/s/<subdomain>` route for local testing.
 
 ## Wire protocol (for proxy server implementers)
 

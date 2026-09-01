@@ -25,6 +25,8 @@
 
 #ifndef __EMSCRIPTEN__
 #include <ixwebsocket/IXWebSocket.h>
+#else
+#include <emscripten/websocket.h>
 #endif
 
 using ProxyPacket = std::vector<uint8_t>;
@@ -112,11 +114,12 @@ private:
     void onPacket(const std::error_code& ec, std::size_t bytes_transferred);
     void onSent(const std::error_code& ec, std::size_t bytes_transferred);
 
-    // WebSocket transport (runs on m_io, fed by the ixwebsocket thread)
+    // WebSocket transport. Native: runs on m_io, fed by the ixwebsocket thread.
+    // Emscripten: everything runs on the dispatcher thread that pumps m_io.
 #ifndef __EMSCRIPTEN__
     void onWebSocketEvent(uint32_t generation, ix::WebSocketMessageType type, const std::string& payload, const std::string& reason);
-    bool onWebSocketData(const std::string& data);
 #endif
+    bool onWebSocketData(std::string_view data);
 
     // handles a complete proxy packet stored in m_buffer, returns false when the proxy got disconnected
     bool handlePacket(std::size_t size);
@@ -128,8 +131,10 @@ private:
 
 #ifndef __EMSCRIPTEN__
     std::shared_ptr<ix::WebSocket> m_ws;
-    std::string m_wsRecvBuffer;
+#else
+    EMSCRIPTEN_WEBSOCKET_T m_emWs = 0;
 #endif
+    std::string m_wsRecvBuffer;
     // bumped on every connect/disconnect; async handlers capture it and ignore
     // completions that belong to a previous connection, otherwise a dying
     // read handler can tear down the next connection attempt over and over

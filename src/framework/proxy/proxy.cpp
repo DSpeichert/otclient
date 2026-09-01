@@ -23,6 +23,11 @@
 #include "proxy.h"
 #include "proxy_client.h"
 
+#ifdef __EMSCRIPTEN__
+#include <framework/core/eventdispatcher.h>
+#include <framework/core/logger.h>
+#endif
+
 ProxyManager g_proxy;
 
 void ProxyManager::init()
@@ -30,9 +35,19 @@ void ProxyManager::init()
     if (m_working)
         return;
     m_working = true;
+#ifdef __EMSCRIPTEN__
+    // Emscripten WebSockets deliver their events on the thread that created
+    // them, and a thread blocked in io_context::run() never returns to the
+    // browser event loop to receive them. So instead of a dedicated io thread
+    // the io_context is pumped from the dispatcher thread: timers and posted
+    // handlers run inside poll(), websocket callbacks arrive between pumps on
+    // the same thread, and all proxy state stays single-threaded.
+    m_pollEvent = g_dispatcher.cycleEvent([this] { m_io.poll(); }, 10);
+#else
     m_thread = std::thread([&] {
         m_io.run();
     });
+#endif
 }
 
 void ProxyManager::terminate()
@@ -41,12 +56,23 @@ void ProxyManager::terminate()
         return;
     m_working = false;
     clear();
+#ifdef __EMSCRIPTEN__
+    // the dispatcher may already be shut down here, so the teardown handlers
+    // queued by clear() are drained with one last manual pump
+    if (m_pollEvent) {
+        m_pollEvent->cancel();
+        m_pollEvent = nullptr;
+    }
+    m_guard.reset();
+    m_io.poll();
+#else
     m_guard.reset();
     if (!m_thread.joinable()) {
         stdext::millisleep(100);
         m_io.stop();
     }
     m_thread.join();
+#endif
 }
 
 void ProxyManager::clear()
@@ -85,6 +111,13 @@ void ProxyManager::addProxy(const std::string& host, uint16_t port, int priority
     const bool webSocket = Proxy::isWebSocketUrl(host);
     if (webSocket)
         port = 0;
+
+#ifdef __EMSCRIPTEN__
+    if (!webSocket) {
+        g_logger.warning("[proxy] ignoring TCP proxy {}:{}: only ws:// and wss:// proxies work in the browser build", host, port);
+        return;
+    }
+#endif
 
     for (auto& proxy_weak : m_proxies) {
         if (const auto proxy = proxy_weak.lock()) {
@@ -213,6 +246,11 @@ std::vector<ProxyStatus> ProxyManager::getProxiesStatus()
     if (!m_working)
         return snapshot(); // no io thread running, nothing can race
 
+#ifdef __EMSCRIPTEN__
+    // the io_context is pumped from this very thread (see init()), so reading
+    // the fields directly cannot race; posting and waiting would deadlock
+    return snapshot();
+#else
     auto promise = std::make_shared<std::promise<std::vector<ProxyStatus>>>();
     auto future = promise->get_future();
     post(m_io, [promise, snapshot] {
@@ -222,6 +260,7 @@ std::vector<ProxyStatus> ProxyManager::getProxiesStatus()
     if (future.wait_for(std::chrono::milliseconds(250)) != std::future_status::ready)
         return {};
     return future.get();
+#endif
 }
 
 std::map<std::string, std::string> ProxyManager::getProxiesDebugInfo()

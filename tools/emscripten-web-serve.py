@@ -4,6 +4,10 @@ Serve the generated WebAssembly bundle with the isolation headers that Emscripte
 pthread builds require (COOP/COEP/CORP). Example:
 
   python3 tools/emscripten-web-serve.py --root build-emscripten-web --port 8000
+
+Also mirrors the hosted-deployment routing (client.ots.ovh): /s/<subdomain>
+serves otclient.html with a window.OTW config injected in place of the
+<!--OTW_CONFIG--> placeholder, exactly like the production edge worker does.
 """
 
 from __future__ import annotations
@@ -28,9 +32,42 @@ DEFAULT_HEADERS = {
 }
 
 
+SUBDOMAIN_ROUTE = re.compile(r"^/s/([a-z0-9][a-z0-9-]{0,62})/?$")
+HEAD_TAG = re.compile(r"<head[^>]*>", re.IGNORECASE)
+
+
 class HeaderInjectorHandler(http.server.SimpleHTTPRequestHandler):
     extra_headers: dict[str, str] = {}
     default_origin: str | None = None
+
+    def do_GET(self) -> None:  # type: ignore[override]
+        match = SUBDOMAIN_ROUTE.match(self.path.split("?", 1)[0])
+        if not match:
+            super().do_GET()
+            return
+
+        shell = Path(os.getcwd()) / "otclient.html"
+        if not shell.exists():
+            self.send_error(404, "otclient.html not found in serve root")
+            return
+
+        subdomain = match.group(1)
+        config = (
+            "<script>window.OTW = "
+            f'{{ assetBase: "", subdomain: "{subdomain}" }};</script>'
+        )
+        # injected after the <head> tag: emscripten minifies the shell, so no
+        # comment placeholder survives to be replaced (same as the edge worker)
+        html = shell.read_text(encoding="utf-8")
+        html = HEAD_TAG.sub(lambda m: m.group(0) + config, html, count=1)
+        body = html.encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _emit_extra_headers(self) -> None:
         for key, value in self.extra_headers.items():
@@ -192,7 +229,8 @@ def main() -> None:
 
     os.chdir(serve_root)
     try:
-        httpd = socketserver.TCPServer((args.bind, args.port), HeaderInjectorHandler)
+        # threading: a browser fetches the .js/.wasm/.data files concurrently
+        httpd = socketserver.ThreadingTCPServer((args.bind, args.port), HeaderInjectorHandler)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
             print(f"[error] Port {args.port} is already in use.", file=sys.stderr)

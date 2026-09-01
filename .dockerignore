@@ -12,6 +12,14 @@
 /android/app/build/
 /android/app/.cxx/
 /android/.gradle/
+# keep downloaded game assets out of the build context (they would be baked
+# into the emscripten preload package otherwise); README/.gitignore stay
+/data/things/*
+!/data/things/README.md
+!/data/things/.gitignore
+/data/sounds/*
+!/data/sounds/README.md
+!/data/sounds/.gitignore
 Dockerfile*
 *.dll
 *.exe

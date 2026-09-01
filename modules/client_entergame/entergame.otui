@@ -214,6 +214,7 @@ EnterGameWindow
     margin-top: 6
 
   QtButton
+    id: loginButton
     !text: tr('Login')
     anchors.right: parent.right
     anchors.top: prev.bottom
