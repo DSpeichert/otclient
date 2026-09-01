@@ -5,6 +5,9 @@ name: Deploy Web Client
 # repo). Uploading alone is inert; the `promote` input flips the live pointer
 # webclient/current.json to the uploaded build. Rollback = re-run with
 # promote=true and an older build id.
+#
+# For a local build + deploy without Actions, use tools/deploy-webclient.sh
+# (same bucket layout and pointer).
 
 on:
   workflow_dispatch:
